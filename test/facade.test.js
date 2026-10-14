@@ -1,17 +1,17 @@
 // ====================================================================
-// Enterprise Facade & Active Probe Defense Tests
-// Validates masquerade behavior, RFC 426 compliance, content negotiation,
-// security headers, and mock ERP REST API responses
+// Enterprise Gateway & Service Integration Tests
+// Validates RFC 426 compliance, content negotiation,
+// security headers, device provisioning, and mock ERP REST API responses
 // ====================================================================
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const http = require('http');
 
 const config = require('../src/config');
 const { handleWarehouses, handleTransactions, handleTelemetry } = require('../src/controllers/inventoryController');
+const { handleProfileRequest } = require('../src/controllers/profileController');
 
-test('Facade: handleWarehouses returns valid enterprise hub metadata', () => {
+test('Integration: handleWarehouses returns valid enterprise hub metadata', () => {
     let statusCode = null;
     let headers = null;
     let body = '';
@@ -38,7 +38,7 @@ test('Facade: handleWarehouses returns valid enterprise hub metadata', () => {
     assert.equal(parsed.nodes[0].id, 'WH-US-EAST');
 });
 
-test('Facade: handleTransactions returns simulated stock transactions', () => {
+test('Integration: handleTransactions returns simulated stock transactions', () => {
     let statusCode = null;
     let body = '';
 
@@ -57,7 +57,7 @@ test('Facade: handleTransactions returns simulated stock transactions', () => {
     assert.ok(parsed.transactions[0].batchId.startsWith('BATCH-'));
 });
 
-test('Facade: handleTelemetry returns real-time linked system metrics', () => {
+test('Integration: handleTelemetry returns real-time linked system metrics', () => {
     let statusCode = null;
     let body = '';
 
@@ -76,4 +76,70 @@ test('Facade: handleTelemetry returns real-time linked system metrics', () => {
     assert.ok(parsed.metrics);
     assert.equal(typeof parsed.metrics.totalBatches, 'number');
     assert.equal(typeof parsed.metrics.heapUsedMB, 'string');
+});
+
+test('Profile: Default request returns enterprise device provisioning JSON (User-Agent ignored)', () => {
+    let statusCode = null;
+    let headers = null;
+    let body = '';
+
+    const req = {
+        url: `/api/v1/auth/device/${config.SERVICE_TOKEN}`,
+        headers: {
+            host: 'mesh.enterprise.internal',
+            'user-agent': 'ClashX/1.90.0' // User-Agent should be ignored!
+        }
+    };
+    const res = {
+        setHeader: () => {},
+        writeHead: (code, h) => {
+            statusCode = code;
+            headers = h;
+        },
+        end: (payload) => {
+            body = payload;
+        }
+    };
+
+    handleProfileRequest(req, res);
+
+    assert.equal(statusCode, 200);
+    assert.equal(headers['Content-Type'], 'application/json; charset=utf-8');
+    const parsed = JSON.parse(body);
+    assert.equal(parsed.status, 'PROVISIONED');
+    assert.ok(parsed.terminalId.startsWith('PDA-TERMINAL-'));
+    assert.equal(parsed.channel.mode, 'SECURE_STREAM_V2');
+});
+
+test('Profile: Request with ?format=raw returns raw profile link', () => {
+    let statusCode = null;
+    let headers = null;
+    let body = '';
+
+    const req = {
+        url: `/api/v1/auth/device/${config.SERVICE_TOKEN}?format=raw`,
+        headers: {
+            host: 'mesh.enterprise.internal',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
+    };
+    const res = {
+        setHeader: () => {},
+        writeHead: (code, h) => {
+            statusCode = code;
+            headers = h;
+        },
+        end: (payload) => {
+            body = payload;
+        }
+    };
+
+    handleProfileRequest(req, res);
+
+    assert.equal(statusCode, 200);
+    assert.equal(headers['Content-Type'], 'text/plain; charset=utf-8');
+    assert.ok(body.length > 20);
+    const decoded = Buffer.from(body, 'base64').toString('utf8');
+    assert.ok(decoded.includes(config.SERVICE_TOKEN));
+    assert.ok(decoded.includes('mesh.enterprise.internal'));
 });

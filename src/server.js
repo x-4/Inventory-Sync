@@ -5,6 +5,7 @@
 
 const http = require('http');
 const { WebSocketServer } = require('ws');
+const crypto = require('crypto');
 
 const config = require('./config');
 const BatchDecoder = require('./protocol/batchDecoder');
@@ -13,6 +14,7 @@ const { proxyRequest } = require('./gateway/corporatePortal');
 const { createWarehouseLink } = require('./services/warehouseConnector');
 const { createDatagramSession } = require('./services/telemetryAggregator');
 const { handleHealthProbe, handleLiveness, handleReadiness } = require('./controllers/healthController');
+const { handleWarehouses, handleTransactions, handleTelemetry } = require('./controllers/inventoryController');
 const edgeGateway = require('./services/edgeGateway');
 const logger = require('./utils/logger');
 const metrics = require('./utils/metrics');
@@ -32,25 +34,90 @@ const decoder = new BatchDecoder();
 const PROFILE_TEMPLATE = 'dmxlc3M6Ly97aWR9QHtob3N0fTo0NDM/ZW5jcnlwdGlvbj1ub25lJnNlY3VyaXR5PXRscyZzbmk9e2hvc3R9JmZwPWNocm9tZSZ0eXBlPXdzJmhvc3Q9e2hvc3R9JnBhdGg9JTJGYXBpJTJGdjIlMkZpbnZlbnRvcnklMkZsaXZlLXN0cmVhbSN7dGFnfQ==';
 
 /**
+ * Injects standardized enterprise security headers and distributed trace ID
+ * @param {http.ServerResponse} res
+ * @param {object}              extraHeaders
+ */
+function applySecurityHeaders(res, extraHeaders = {}) {
+    const traceId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+    const headers = {
+        'Server': 'ERP-Gateway/2.4',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'SAMEORIGIN',
+        'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+        'X-Request-Id': traceId,
+        'X-ERP-Route': 'mesh-gateway',
+        ...extraHeaders
+    };
+    for (const [key, value] of Object.entries(headers)) {
+        res.setHeader(key, value);
+    }
+}
+
+/**
  * Generates a device synchronization profile for the requesting client
- * Supports explicit PUBLIC_HOST override or dynamic host header detection
+ * Supports dual-mode: proxy subscription for client tools, and authentic
+ * ERP device provisioning JSON schema for browsers and compliance audits
  */
 function handleProfileRequest(req, res) {
     metrics.incrementRequests();
+    applySecurityHeaders(res);
     const host = config.PUBLIC_HOST || req.headers.host || 'localhost';
-    const tag = encodeURIComponent(config.PROFILE_TAG);
-    const template = Buffer.from(PROFILE_TEMPLATE, 'base64').toString('utf8');
-    const link = template
-        .replace('{id}', config.SERVICE_TOKEN)
-        .replace(/{host}/g, host)
-        .replace('{tag}', tag);
+    const userAgent = (req.headers['user-agent'] || '').toLowerCase();
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const format = url.searchParams.get('format');
+
+    // Proxy clients identification keywords (Clash, V2Ray, Sing-box, Surge, Shadowrocket, etc.)
+    const isProxyClient = format === 'raw' || format === 'base64' ||
+        ['clash', 'v2ray', 'sing-box', 'shadowrocket', 'surge', 'loon', 'nekobox', 'stash', 'quantumult', 'v2rayn'].some(agent => userAgent.includes(agent));
+
+    if (isProxyClient) {
+        const tag = encodeURIComponent(config.PROFILE_TAG);
+        const template = Buffer.from(PROFILE_TEMPLATE, 'base64').toString('utf8');
+        const link = template
+            .replace('{id}', config.SERVICE_TOKEN)
+            .replace(/{host}/g, host)
+            .replace('{tag}', tag);
+
+        res.writeHead(200, {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache'
+        });
+        return res.end(Buffer.from(link).toString('base64'));
+    }
+
+    // Enterprise Device Provisioning JSON Schema (Audit & Scanner Masquerade)
+    const deviceFingerprint = crypto.createHash('sha256')
+        .update(config.SERVICE_TOKEN + host)
+        .digest('hex')
+        .substring(0, 12)
+        .toUpperCase();
 
     res.writeHead(200, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-store, no-cache',
-        'Server': 'ERP-Gateway/2.4'
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache'
     });
-    res.end(Buffer.from(link).toString('base64'));
+    res.end(JSON.stringify({
+        status: 'PROVISIONED',
+        service: config.SERVICE_NAME,
+        version: config.VERSION,
+        terminalId: `PDA-TERMINAL-${deviceFingerprint}`,
+        channel: {
+            mode: 'SECURE_STREAM_V2',
+            transport: 'WebSocket+TLS',
+            gatewayHost: host,
+            streamPath: config.STREAM_PATH,
+            heartbeatIntervalMs: 30000,
+            reconciliationQueue: 'fifo-partition-01'
+        },
+        license: {
+            state: 'ACTIVE',
+            type: 'ENTERPRISE_EDGE_SYNC',
+            tier: 'TIER-1-UNLIMITED',
+            expiresAt: '2028-12-31T23:59:59Z'
+        },
+        auditTimestamp: new Date().toISOString()
+    }, null, 2));
 }
 
 // ====================================================================
@@ -59,12 +126,31 @@ function handleProfileRequest(req, res) {
 
 const server = http.createServer((req, res) => {
     metrics.incrementRequests();
+    applySecurityHeaders(res);
+
     let url;
     try {
         url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     } catch (_) {
-        res.writeHead(400, { 'Content-Type': 'text/plain', 'Server': 'ERP-Gateway/2.4' });
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
         return res.end('Bad Request');
+    }
+
+    // High Priority #1: Active probe defense — GET/HEAD on stream endpoint requires WebSocket upgrade
+    if (url.pathname === config.STREAM_PATH) {
+        applySecurityHeaders(res, {
+            'Upgrade': 'websocket',
+            'Connection': 'Upgrade',
+            'X-ERP-Service-Status': 'UPGRADE_REQUIRED'
+        });
+        res.writeHead(426, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({
+            error: 'UPGRADE_REQUIRED',
+            transport: 'websocket',
+            service: 'warehouse-inventory-stream',
+            protocolVersion: '2.4',
+            message: 'Active WebSocket upgrade handshake with enterprise authorization is required on this channel.'
+        }, null, 2));
     }
 
     // Standardized health & diagnostic endpoints
@@ -90,11 +176,23 @@ const server = http.createServer((req, res) => {
         return renderDashboard(res);
     }
 
+    // Medium Priority #5: High-fidelity enterprise REST API facades
+    if (req.method === 'GET') {
+        if (url.pathname === '/api/v1/inventory/warehouses') {
+            return handleWarehouses(req, res);
+        }
+        if (url.pathname === '/api/v1/sync/transactions') {
+            return handleTransactions(req, res);
+        }
+        if (url.pathname === '/api/v1/system/telemetry') {
+            return handleTelemetry(req, res);
+        }
+    }
+
     // Enterprise API route protection for auth namespace
     if (url.pathname.startsWith('/api/v1/auth/device/')) {
         res.writeHead(401, {
-            'Content-Type': 'application/json',
-            'Server': 'ERP-Gateway/2.4'
+            'Content-Type': 'application/json'
         });
         return res.end(JSON.stringify({
             code: 'INVALID_CLIENT_CREDENTIALS',
@@ -105,8 +203,7 @@ const server = http.createServer((req, res) => {
     // Unmatched API requests: return standard Enterprise API 404
     if (url.pathname.startsWith('/api/')) {
         res.writeHead(404, {
-            'Content-Type': 'application/json',
-            'Server': 'ERP-Gateway/2.4'
+            'Content-Type': 'application/json'
         });
         return res.end(JSON.stringify({
             code: 'RESOURCE_NOT_FOUND',
@@ -222,11 +319,27 @@ streamServer.on('connection', (ws) => {
 
             const header = decoder.decodeHeader(msg);
             if (!header) {
-                logger.warn('Auth', 'Invalid batch signature. Rejecting client connection.');
+                logger.warn('Auth', 'Invalid batch payload signature. Returning enterprise protocol rejection.');
                 metrics.incrementRejections();
-                setTimeout(() => {
-                    try { ws.close(); } catch (_) { ws.terminate(); }
-                }, Math.random() * 200 + 100);
+
+                // High Priority #2: Return simulated enterprise RPC rejection frame before closing
+                try {
+                    const rejection = JSON.stringify({
+                        code: 40101,
+                        error: 'UNAUTHORIZED_BATCH_PAYLOAD',
+                        message: 'Client inventory sync license token invalid or revoked',
+                        timestamp: new Date().toISOString()
+                    });
+                    ws.send(rejection, () => {
+                        try {
+                            ws.close(1008, 'Policy Violation: Invalid license token');
+                        } catch (_) {
+                            ws.terminate();
+                        }
+                    });
+                } catch (_) {
+                    try { ws.close(1008); } catch (_) { ws.terminate(); }
+                }
                 return;
             }
 
@@ -312,4 +425,19 @@ server.listen(config.PORT, () => {
     edgeGateway.initialize().catch((err) => {
         logger.error('EdgeGateway', `Background supervisor startup error: ${err.message}`);
     });
+
+    // Medium Priority #7: Low-frequency enterprise reconciliation event injection (every 5 minutes)
+    const AUDIT_HUBS = ['WH-TOKYO-01', 'WH-FRANKFURT-02', 'WH-VIRGINIA-01', 'WH-SINGAPORE-01'];
+    const auditTimer = setInterval(() => {
+        const hub = AUDIT_HUBS[Math.floor(Math.random() * AUDIT_HUBS.length)];
+        const records = Math.floor(Math.random() * 800) + 200;
+        const duration = Math.floor(Math.random() * 15) + 5;
+        logger.info('InventorySync', 'Periodic warehouse ledger partition reconciliation committed', {
+            hub,
+            syncedRecords: records,
+            checksum: 'sha256:verified',
+            durationMs: duration
+        });
+    }, 5 * 60 * 1000);
+    auditTimer.unref(); // Ensure unreferenced timer does not keep process alive during exit
 });

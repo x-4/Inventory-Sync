@@ -81,6 +81,8 @@ function proxyRequest(req, res, portalOrigin) {
         // Standard corporate gateway headers
         responseHeaders['Server'] = 'ERP-Gateway/2.4';
         responseHeaders['X-ERP-Gateway-Route'] = 'portal-mesh';
+        responseHeaders['X-Content-Type-Options'] = 'nosniff';
+        responseHeaders['X-Frame-Options'] = 'SAMEORIGIN';
 
         res.writeHead(proxyRes.statusCode, responseHeaders);
         proxyRes.pipe(res, { end: true });

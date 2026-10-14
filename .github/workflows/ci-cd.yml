@@ -1,0 +1,136 @@
+name: Enterprise CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: enterprise-inventory-sync
+  NODE_VERSION: '20'
+
+jobs:
+  # ====================================================================
+  # Stage 1: Quality Assurance (Lint & Syntax Check)
+  # ====================================================================
+  quality-gate:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Run Syntax & Lint Checks
+        run: npm run lint
+
+  # ====================================================================
+  # Stage 2: Automated Unit Testing
+  # ====================================================================
+  unit-tests:
+    name: Automated Unit Tests
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Execute Automated Test Suite
+        run: npm test
+
+  # ====================================================================
+  # Stage 3: Container Build & Health Probe Validation
+  # ====================================================================
+  container-build:
+    name: Container Build & Health Check
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Container Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Container Ingress & Health Probes
+        run: |
+          echo "Starting test container instance..."
+          docker run -d --name test-node -p 3000:3000 ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          sleep 4
+          
+          echo "Checking container health probe endpoint (/health)..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Health probe failed with status: $HTTP_STATUS"
+            docker logs test-node
+            exit 1
+          fi
+          
+          echo "Health probe response:"
+          curl -s http://localhost:3000/health
+          
+          echo "Stopping and cleaning test container..."
+          docker stop test-node && docker rm test-node
+
+  # ====================================================================
+  # Stage 4: Alerting & Notification on Failure
+  # ====================================================================
+  notify-status:
+    name: Pipeline Status & Alert Dispatcher
+    needs: [ quality-gate, unit-tests, container-build ]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Workflow Summary Report
+        run: |
+          echo "### 🚀 CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: \`${{ github.actor }}\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.quality-gate.result }}" == "success" ] && \
+             [ "${{ needs.unit-tests.result }}" == "success" ] && \
+             [ "${{ needs.container-build.result }}" == "success" ]; then
+            echo "- **Status**: ✅ **SUCCESS (All quality gates passed)**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status**: ❌ **FAILURE (Pipeline halted)**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> ⚠️ **Alert**: One or more critical pipeline stages failed. Check individual job logs for trace information." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Dispatch Failure Alert Webhook (Optional)
+        if: failure() && env.ALERT_WEBHOOK_URL != ''
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          curl -s -X POST -H 'Content-Type: application/json' \
+            -d "{\"text\": \"🚨 [CI/CD Alert] Pipeline failed on branch ${{ github.ref_name }} (commit ${{ github.sha }}). Triggered by ${{ github.actor }}.\"}" \
+            ${{ secrets.ALERT_WEBHOOK_URL }} || true

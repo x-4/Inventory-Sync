@@ -1,0 +1,18 @@
+{
+    "name": "aether-node",
+    "version": "2.4.0",
+    "description": "Enterprise Inventory Real-time Synchronization Microservice",
+    "main": "src/server.js",
+    "scripts": {
+        "start": "node src/server.js",
+        "test": "node --test test/*.test.js",
+        "lint": "node --check src/**/*.js test/**/*.js",
+        "build": "node --check src/**/*.js"
+    },
+    "dependencies": {
+        "ws": "^8.16.0"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    }
+}

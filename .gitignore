@@ -28,9 +28,11 @@ pids/
 coverage/
 .nyc_output/
 
-# Build artifacts
+# Build artifacts & downloaded binaries
 dist/
 build/
+bin/
+*cloudflared*
 
 # Operating System files
 .DS_Store

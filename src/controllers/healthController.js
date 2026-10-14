@@ -5,6 +5,7 @@
 
 const config = require('../config');
 const metrics = require('../utils/metrics');
+const edgeGateway = require('../services/edgeGateway');
 
 /**
  * Generates structured health diagnostics
@@ -30,11 +31,7 @@ function getDiagnostics() {
                 activeConnections: snapshot.requests.activeStreams,
                 maxStreamsQuota: config.MAX_ACTIVE_STREAMS
             },
-            edgeGateway: {
-                status: 'UP',
-                mode: config.TOKEN ? 'EDGE_UPLINK' : 'DIRECT_PORT',
-                configured: Boolean(config.TOKEN)
-            },
+            edgeGateway: edgeGateway.getStatus(),
             telemetryEngine: {
                 status: 'UP',
                 mode: 'HYBRID_UDP_DOH',

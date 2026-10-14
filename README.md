@@ -124,3 +124,14 @@ npm test
 # 启动服务
 TOKEN="你的_TUNNEL_TOKEN" node src/server.js
 ```
+
+### 3. PaaS / Serverless 托管部署 (GalaxyCloud, Render, Koyeb 等)
+
+本项目原生支持**跨平台运行时自适应能力**：
+- 在 **GalaxyCloud**、**Render**、**Koyeb** 等标准 Node.js PaaS 平台托管时，无需配置 Docker 镜像或外部守护脚本。
+- 服务启动时内置的边缘网关引擎会自动检测宿主操作系统与 CPU 架构（Linux x64/arm64 等），若未预装 `cloudflared`，将自动从官方镜像拉取二进制文件并由 Node.js 看门狗实施 7x24 小时生命周期守护与自动重连。
+- 只需在 PaaS 控制台配置环境变量：
+  - `TOKEN`: 你的 Cloudflare Tunnel Token
+  - `UUID`: 你的自定义身份凭据
+  - `PUBLIC_HOST`: 你的公网自定义域名（可选）
+

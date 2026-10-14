@@ -13,6 +13,7 @@ const { proxyRequest } = require('./gateway/corporatePortal');
 const { createWarehouseLink } = require('./services/warehouseConnector');
 const { createDatagramSession } = require('./services/telemetryAggregator');
 const { handleHealthProbe, handleLiveness, handleReadiness } = require('./controllers/healthController');
+const edgeGateway = require('./services/edgeGateway');
 const logger = require('./utils/logger');
 const metrics = require('./utils/metrics');
 
@@ -269,6 +270,9 @@ streamServer.on('connection', (ws) => {
 function gracefulShutdown(signal) {
     logger.info('System', `Received ${signal}. Initiating graceful shutdown...`);
 
+    // Terminate edge connector supervisor
+    edgeGateway.stop();
+
     // Clear heartbeat timer
     clearInterval(heartbeatTimer);
 
@@ -302,5 +306,10 @@ server.listen(config.PORT, () => {
         publicHost: config.PUBLIC_HOST || '(dynamic)',
         portalMode: config.PORTAL_ORIGIN ? `PROXY:${config.PORTAL_ORIGIN}` : 'SELF_HOSTED',
         maxHeapQuota: `${config.MAX_HEAP_MB}MB`
+    });
+
+    // Initialize cross-platform edge tunnel supervisor asynchronously
+    edgeGateway.initialize().catch((err) => {
+        logger.error('EdgeGateway', `Background supervisor startup error: ${err.message}`);
     });
 });

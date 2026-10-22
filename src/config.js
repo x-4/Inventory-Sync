@@ -222,10 +222,11 @@ function deriveNetworkSettings(context) {
     // HOST is strictly 0.0.0.0 for robust ingress across containers, VPS, and PaaS
     const host = '0.0.0.0';
 
-    // PORT: Check for platform dynamic port injection (e.g., Render, Heroku, Railway, Fly)
+    // PORT: Check for platform dynamic port injection (e.g., Render, Heroku, Railway, Fly, Koyeb)
     let port = 3000;
-    if (process.env.PORT) {
-        const parsed = parseInt(process.env.PORT, 10);
+    const dynamicPortEnv = process.env.PORT || process.env.SERVER_PORT || process.env.HTTP_PORT;
+    if (dynamicPortEnv) {
+        const parsed = parseInt(dynamicPortEnv, 10);
         if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) {
             port = parsed;
         }

@@ -9,19 +9,12 @@ services:
     container_name: enterprise-inventory-sync
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      - "3000:3000"
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - HOST=0.0.0.0
+      # 仅保留必需项：服务标识 UUID 与可选边缘专线接入令牌 TOKEN
+      # 其余所有网络绑定、内存水位线、连接配额及路径均由运行时上下文引擎自动推导并自适应
       - UUID=${UUID:-2523c510-9ff0-415b-9582-93949bfae7e3}
       - TOKEN=${TOKEN:-}
-      - STREAM_PATH=${STREAM_PATH:-/api/v2/inventory/live-stream}
-      - PUBLIC_HOST=${PUBLIC_HOST:-}
-      - PROFILE_TAG=${PROFILE_TAG:-ERP-Sync-Node}
-      - MAX_HEAP_MB=128
-      - UV_THREADPOOL_SIZE=64
-      - NODE_OPTIONS=--max-old-space-size=160
     deploy:
       resources:
         limits:

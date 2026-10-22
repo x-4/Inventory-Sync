@@ -21,22 +21,21 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
 
 ---
 
-## 环境变量配置
+## 环境变量配置 (零维护运行时上下文自适应)
 
-所有配置项均采用业务中立的命名规范：
+系统采用**自主上下文感知引擎**，**仅保留 `UUID` 与 `TOKEN` 为必需/核心配置项**。其余所有运行参数（网络端口、监听地址、公网域名、数据流路径、内存熔断水位线、并发连接配额、异步线程池等）均在启动时依据部署上下文（Linux Cgroup、PaaS 平台元数据、硬件规格）**自动推断并最优自适应，免除且禁止手动设置**。
 
-| 变量名 | 类型 | 默认值 | 说明 |
-| :--- | :--- | :--- | :--- |
-| **`TOKEN`** | String | *(空)* | **统一接入令牌**（边缘专线连接器 Tunnel Token，配置后自动开启公网加速专线） |
-| **`PUBLIC_HOST`** | String | *(空)* | **显式公共域名**（若配置则强制下发该主机名，支持多层 CDN/反向代理场景） |
-| **`UUID`** | String | `2523c510-9ff0...` | 企业租户身份凭证（节点认证密钥，强烈建议在生产中自定义） |
-| **`PORT`** | Number | `3000` | 容器/服务监听网络端口 |
-| **`STREAM_PATH`** | String | `/api/v2/inventory/live-stream` | 实时数据流专线同步端点路径 |
-| **`MAX_HEAP_MB`** | Number | `128` | 内存保护熔断水位线 (MB)，严格受限于 256MB 容器规格 |
-| **`MAX_ACTIVE_STREAMS`** | Number | `128` | 最大并发数据流配额保护上限 |
-| **`UV_THREADPOOL_SIZE`** | Number | `64` | 异步 I/O 线程池容量（消除高并发 DNS 查询排队） |
-| **`PORTAL_ORIGIN`** | String | *(空)* | 可选外部门户反代目标（默认留空，100% 启用自托管高仿真企业控制台，杜绝外部钓鱼风险） |
-| **`PROFILE_TAG`** | String | `ERP-Sync-Node` | 同步节点标识名称 |
+| 环境变量 | 必需级别 | 默认值 / 回退策略 | 描述与自适应逻辑 |
+| :--- | :---: | :--- | :--- |
+| **`UUID`** | **必需项** | `2523c510-9ff0-415b-9582-93949bfae7e3` | **企业租户服务身份凭证**。用于身份鉴别与安全网关握手。若未提供或格式异常，系统将自动采用安全确定性备用凭证启动并记录审计警告，保证服务永不宕机。 |
+| **`TOKEN`** | 可选项 | *(空，自适应直连模式)* | **统一边缘接入令牌 (Cloudflare Tunnel)**。注入后系统自动激活边缘专线隧道并拉起 `cloudflared` 守护进程；若留空则自动降级为标准独立端口直连模式。 |
+
+> [!NOTE]
+> **免除手动配置说明**：
+> - **端口与绑定**：自动推断并安全绑定 `0.0.0.0`；若处于 PaaS 平台（Render, Railway, Fly.io, Heroku, Koyeb）自动无缝识别平台动态注入的端口，常规容器/VPS 默认自适应绑定 `3000`。
+> - **资源与熔断水位 (`MAX_HEAP_MB`, `MAX_ACTIVE_STREAMS`)**：系统通过 Linux Cgroup (v1/v2) 及物理内存动态推算可用配额。256MB 容器自动设定 128MB 堆保护；1GB 实例自动扩展至 512MB 堆保护与 512 并发流配额，规避 OOM。
+> - **路径与伪装 (`STREAM_PATH`, `PROFILE_TAG`)**：统一收敛为标准高仿真企业级端点 `/api/v2/inventory/live-stream`，节点标签自动结合平台与主机名派生。
+> - 若在环境或 `.env` 中传入非必要配置，系统将自动发出审计提示并由上下文引擎接管为最优值。
 
 ---
 
@@ -108,12 +107,11 @@ docker compose up -d
 # 1. 构建跨架构原生生产镜像 (支持 x86_64 与 aarch64)
 docker build -t enterprise-inventory-sync:latest .
 
-# 2. 携带边缘接入专线 Token 启动
+# 2. 携带业务必需参数启动 (仅需 UUID 与可选 TOKEN，其余参数自适应推导)
 docker run -d \
   --name erp-sync-node \
-  -e TOKEN="你的_CLOUDFLARE_TUNNEL_TOKEN" \
-  -e PUBLIC_HOST="sync.yourdomain.com" \
   -e UUID="你的_自定_UUID" \
+  -e TOKEN="你的_CLOUDFLARE_TUNNEL_TOKEN" \
   -p 3000:3000 \
   --restart unless-stopped \
   enterprise-inventory-sync:latest

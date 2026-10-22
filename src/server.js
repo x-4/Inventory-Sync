@@ -338,6 +338,9 @@ process.on('exit', () => {
     edgeGateway.stopSync();
 });
 
+// Print autonomous context inference audit before binding listener
+config.printAuditSummary(logger);
+
 server.listen(config.PORT, config.HOST, () => {
     logger.info('System', `Enterprise Inventory Sync Microservice ONLINE`, {
         host: config.HOST,

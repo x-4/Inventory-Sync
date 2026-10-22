@@ -1,5 +1,7 @@
 // ====================================================================
 // Enterprise Microservice Ecosystem Configuration (PM2 Supervisor)
+// Autonomous context inference derives all ports, memory quotas, and thread pools.
+// Strictly accepts UUID and TOKEN.
 // ====================================================================
 
 module.exports = {
@@ -13,10 +15,8 @@ module.exports = {
         max_memory_restart: '180M',
         env: {
             NODE_ENV: 'production',
-            PORT: 3000,
-            HOST: '0.0.0.0',
-            UV_THREADPOOL_SIZE: 64,
-            NODE_OPTIONS: '--max-old-space-size=160'
+            UUID: process.env.UUID || '',
+            TOKEN: process.env.TOKEN || ''
         },
         kill_timeout: 10000,
         exp_backoff_restart_delay: 1000,

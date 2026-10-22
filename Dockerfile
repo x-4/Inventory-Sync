@@ -33,18 +33,14 @@ RUN mkdir -p /app/bin && chown -R node:node /app
 USER node
 
 ENV NODE_ENV=production
-ENV PORT=3000
-# 统一接入令牌 (可在平台或运行时注入，兼容边缘专线通道)
+# 仅保留必需项：服务标识 UUID 与边缘专线接入令牌 TOKEN (其余参数由运行时上下文自适应推导)
+ENV UUID=""
 ENV TOKEN=""
-# 优化异步 I/O 线程池容量
-ENV UV_THREADPOOL_SIZE=64
-# 严格限制 V8 堆内存上限为 160MB，适配 256MB 规格轻量容器，杜绝 OOM 崩溃
-ENV NODE_OPTIONS="--max-old-space-size=160"
 
 EXPOSE 3000
 
 # 生产级健康检查探针 (请求 /health 端点，检查 JSON 响应状态)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 
 ENTRYPOINT ["./entrypoint.sh"]

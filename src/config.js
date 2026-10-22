@@ -175,33 +175,39 @@ function detectEffectiveMemoryMB() {
  */
 function deriveResourceLimits(memoryMB, cpuCores) {
     let maxHeapMB;
+    let maxRssMB;
     let maxStreams;
     let cacheEntries;
 
     if (memoryMB <= 192) {
         // Ultra-micro environment (128MB VPS / small container)
         maxHeapMB = 96;
+        maxRssMB = 150;
         maxStreams = 64;
         cacheEntries = 200;
     } else if (memoryMB <= 384) {
         // Standard lightweight container (256MB Docker spec)
         // Reserves ~70MB for cloudflared + ~58MB for off-heap buffers and OS
         maxHeapMB = 128;
+        maxRssMB = 220;
         maxStreams = 128;
         cacheEntries = 500;
     } else if (memoryMB <= 768) {
         // Medium container / 512MB VPS
         maxHeapMB = 256;
+        maxRssMB = 440;
         maxStreams = 256;
         cacheEntries = 1000;
     } else if (memoryMB <= 1536) {
         // 1GB container / 1GB VPS
         maxHeapMB = 512;
+        maxRssMB = 880;
         maxStreams = 512;
         cacheEntries = 2000;
     } else {
         // Large instance (>= 2GB)
         maxHeapMB = Math.min(2048, Math.floor(memoryMB * 0.45));
+        maxRssMB = Math.min(3072, Math.floor(memoryMB * 0.75));
         maxStreams = Math.min(2048, Math.floor(memoryMB * 0.75));
         cacheEntries = 3000;
     }
@@ -212,7 +218,7 @@ function deriveResourceLimits(memoryMB, cpuCores) {
         process.env.UV_THREADPOOL_SIZE = String(threadPoolSize);
     } catch (_) {}
 
-    return { maxHeapMB, maxStreams, cacheEntries, threadPoolSize };
+    return { maxHeapMB, maxRssMB, maxStreams, cacheEntries, threadPoolSize };
 }
 
 /**
@@ -313,6 +319,7 @@ const AUDIT_INFO = Object.freeze({
     cpuCores,
     threadPoolSize: resources.threadPoolSize,
     derivedHeapLimitMB: resources.maxHeapMB,
+    derivedRssLimitMB: resources.maxRssMB,
     derivedMaxStreams: resources.maxStreams,
     port: network.port,
     host: network.host,
@@ -348,6 +355,7 @@ const config = Object.freeze({
 
     // Autonomously derived resource limits & quotas
     MAX_HEAP_MB: resources.maxHeapMB,
+    MAX_RSS_MB: resources.maxRssMB,
     MAX_ACTIVE_STREAMS: resources.maxStreams,
     CACHE_MAX_ENTRIES: resources.cacheEntries,
 

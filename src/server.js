@@ -21,6 +21,15 @@ const edgeGateway = require('./services/edgeGateway');
 const logger = require('./utils/logger');
 const metrics = require('./utils/metrics');
 
+// CLI Diagnostics Doctor Interceptor
+if (process.argv.includes('--doctor')) {
+    const { runDoctorDiagnostics } = require('./utils/doctor');
+    runDoctorDiagnostics().then((success) => {
+        process.exit(success ? 0 : 1);
+    });
+    return;
+}
+
 // --- Global Process Diagnostics & Logging ---
 process.on('uncaughtException', (err) => {
     logger.error('Runtime', `Uncaught exception encountered: ${err.message}`, { stack: err.stack });
@@ -149,8 +158,18 @@ const streamServer = new WebSocketServer({
     handleProtocols: (protocols) => protocols[0] || false
 });
 
+let isShuttingDown = false;
+
 // WebSocket upgrade with Circuit Breaker guards (OOM & connection quota defense)
 server.on('upgrade', (request, socket, head) => {
+    if (isShuttingDown) {
+        socket.destroy();
+        return;
+    }
+
+    socket.setKeepAlive(true, 15000);
+    socket.setNoDelay(true);
+
     let url;
     try {
         url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
@@ -164,11 +183,12 @@ server.on('upgrade', (request, socket, head) => {
         return;
     }
 
-    // Circuit Breaker 1: Memory heap watermark protection (strictly tuned for 256MB container limits)
+    // Circuit Breaker 1: Multi-metric memory protection (Heap + RSS dual-threshold defense)
     const mem = process.memoryUsage();
     const heapUsedMB = mem.heapUsed / (1024 * 1024);
-    if (heapUsedMB > config.MAX_HEAP_MB) {
-        logger.warn('Protection', `Circuit breaker tripped: heap watermark exceeded (${heapUsedMB.toFixed(1)}MB > ${config.MAX_HEAP_MB}MB). Rejecting upgrade.`);
+    const rssMB = mem.rss / (1024 * 1024);
+    if (heapUsedMB > config.MAX_HEAP_MB || rssMB > config.MAX_RSS_MB) {
+        logger.warn('Protection', `Circuit breaker tripped: memory watermark exceeded (heap: ${heapUsedMB.toFixed(1)}MB/${config.MAX_HEAP_MB}MB, rss: ${rssMB.toFixed(1)}MB/${config.MAX_RSS_MB}MB). Rejecting upgrade.`);
         metrics.incrementRejections();
         socket.destroy();
         return;
@@ -306,7 +326,11 @@ streamServer.on('connection', (ws) => {
 // ====================================================================
 
 function gracefulShutdown(signal) {
-    logger.info('System', `Received ${signal}. Initiating graceful shutdown...`);
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    const activeCount = streamServer.clients.size;
+    logger.info('System', `Received ${signal}. Initiating zero-downtime graceful drain (${activeCount} active stream sessions)...`);
 
     // Terminate edge connector supervisor
     edgeGateway.stop();
@@ -314,20 +338,35 @@ function gracefulShutdown(signal) {
     // Clear heartbeat timer
     clearInterval(heartbeatTimer);
 
-    // Terminate new WebSocket connections and close HTTP listener
-    streamServer.close(() => {
-        logger.info('System', 'All stream socket sessions drained.');
-    });
-
+    // Stop accepting new HTTP connections
     server.close(() => {
         logger.info('System', 'HTTP gateway listener closed successfully.');
-        process.exit(0);
     });
 
-    // Forced exit timeout if connections linger
+    // Zero-downtime draining window for active streams
+    if (activeCount === 0) {
+        logger.info('System', 'No active stream sessions. Terminating immediately.');
+        process.exit(0);
+        return;
+    }
+
+    // Poll for active stream draining
+    const drainInterval = setInterval(() => {
+        if (streamServer.clients.size === 0) {
+            clearInterval(drainInterval);
+            logger.info('System', 'All stream socket sessions successfully drained.');
+            process.exit(0);
+        }
+    }, 500);
+
+    // Forced exit timeout if connections linger beyond 10s
     setTimeout(() => {
-        logger.warn('System', 'Graceful shutdown timeout exceeded. Forcing termination.');
-        process.exit(1);
+        clearInterval(drainInterval);
+        logger.warn('System', `Graceful drain window exceeded (${streamServer.clients.size} remaining). Forcing termination.`);
+        streamServer.clients.forEach(client => {
+            try { client.terminate(); } catch (_) {}
+        });
+        process.exit(0);
     }, 10000).unref();
 }
 

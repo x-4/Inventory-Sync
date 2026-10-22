@@ -5,6 +5,7 @@
     "main": "src/server.js",
     "scripts": {
         "start": "node src/server.js",
+        "doctor": "node src/server.js --doctor",
         "test": "node --test test/*.test.js",
         "lint": "node --check src/**/*.js test/**/*.js",
         "build": "node --check src/**/*.js"

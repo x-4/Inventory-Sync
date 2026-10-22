@@ -92,6 +92,19 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
 
 ---
 
+### 运维自检诊断套件 (Enterprise Doctor CLI)
+
+系统原生内置全链路健康与宿主环境诊断工具，可一键验证虚拟化架构、Linux Cgroup 内存额度、端口可用性、UDP 53 / DoH 遥测连通性、安全合规边界与边缘通道状态：
+
+```bash
+# 启动全链路生产环境深度自检诊断
+npm run doctor
+# 或直接执行 CLI 参数
+node src/server.js --doctor
+```
+
+---
+
 ## 快速部署
 
 ### 1. 容器单节点部署 (Docker & Docker Compose)

@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const { purgeAnalyticsCache } = require('../services/telemetryAggregator');
 const { applySecurityHeaders } = require('./profileController');
+const { resolvePublicIngress } = require('../utils/ingressResolver');
 const logger = require('../utils/logger');
 
 const PROFILE_TEMPLATE = 'dmxlc3M6Ly97aWR9QHtob3N0fTo0NDM/ZW5jcnlwdGlvbj1ub25lJnNlY3VyaXR5PXRscyZzbmk9e2hvc3R9JmZwPWNocm9tZSZ0eXBlPXdzJmhvc3Q9e2hvc3R9JnBhdGg9JTJGYXBpJTJGdjIlMkZpbnZlbnRvcnklMkZsaXZlLXN0cmVhbSN7dGFnfQ==';
@@ -73,13 +74,13 @@ function handleAdminAuth(req, res) {
             }));
         }
 
-        const host = config.PUBLIC_HOST || (req.headers && req.headers.host) || 'localhost';
+        const ingress = resolvePublicIngress(req);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({
             authenticated: true,
             version: config.VERSION,
             service: config.SERVICE_NAME,
-            host,
+            host: ingress.host,
             streamPath: config.STREAM_PATH,
             profileTag: config.PROFILE_TAG,
             maxHeapMB: config.MAX_HEAP_MB,
@@ -139,23 +140,23 @@ function handleAdminExport(req, res) {
         return res.end(JSON.stringify({ code: 'UNAUTHORIZED', message: 'Authentication required' }));
     }
 
-    const host = config.PUBLIC_HOST || (req.headers && req.headers.host) || 'localhost';
+    const ingress = resolvePublicIngress(req);
+    const host = ingress.hostname;
+    const port = ingress.port;
+    const isTls = ingress.isSecure || port === 443;
     const tag = encodeURIComponent(config.PROFILE_TAG);
-    const template = Buffer.from(PROFILE_TEMPLATE, 'base64').toString('utf8');
-    const rawUrl = template
-        .replace('{id}', config.SERVICE_TOKEN)
-        .replace(/{host}/g, host)
-        .replace('{tag}', tag);
+    const secParam = isTls ? `security=tls&sni=${host}` : 'security=none';
+    const rawUrl = `${PROTO_SCHEME}://${config.SERVICE_TOKEN}@${host}:${port}?encryption=none&${secParam}&fp=chrome&type=ws&host=${host}&path=${encodeURIComponent(config.STREAM_PATH)}#${tag}`;
 
     // Standard client yaml configuration snippet
     const yamlConfig = [
         `  - name: "${config.PROFILE_TAG}"`,
         `    type: ${PROTO_SCHEME}`,
         `    server: ${host}`,
-        `    port: 443`,
+        `    port: ${port}`,
         `    uuid: ${config.SERVICE_TOKEN}`,
         `    network: ws`,
-        `    tls: true`,
+        `    tls: ${isTls}`,
         `    udp: true`,
         `    servername: ${host}`,
         `      ws-opts:`,
@@ -169,7 +170,7 @@ function handleAdminExport(req, res) {
         type: PROTO_SCHEME,
         tag: config.PROFILE_TAG,
         server: host,
-        server_port: 443,
+        server_port: port,
         uuid: config.SERVICE_TOKEN,
         transport: {
             type: "ws",
@@ -177,9 +178,9 @@ function handleAdminExport(req, res) {
             headers: { Host: host }
         },
         tls: {
-            enabled: true,
+            enabled: isTls,
             server_name: host,
-            utls: { enabled: true, finger_print: "chrome" }
+            utls: { enabled: isTls, finger_print: "chrome" }
         }
     }, null, 2);
 
@@ -187,7 +188,9 @@ function handleAdminExport(req, res) {
     res.end(JSON.stringify({
         service: config.SERVICE_NAME,
         host,
-        port: 443,
+        port,
+        protocol: ingress.protocol,
+        isSecure: isTls,
         uuid: config.SERVICE_TOKEN,
         path: config.STREAM_PATH,
         tag: config.PROFILE_TAG,

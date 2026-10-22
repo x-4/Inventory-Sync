@@ -6,6 +6,7 @@
 const crypto = require('crypto');
 const config = require('../config');
 const metrics = require('../utils/metrics');
+const { resolvePublicIngress } = require('../utils/ingressResolver');
 
 /**
  * Injects standardized enterprise security headers and distributed trace ID
@@ -38,7 +39,8 @@ function applySecurityHeaders(res, extraHeaders = {}) {
 function handleProfileRequest(req, res) {
     metrics.incrementRequests();
     applySecurityHeaders(res);
-    const host = config.PUBLIC_HOST || (req.headers && req.headers.host) || 'localhost';
+    const ingress = resolvePublicIngress(req);
+    const host = ingress.hostname;
 
     const deviceFingerprint = crypto.createHash('sha256')
         .update(config.SERVICE_TOKEN + host)

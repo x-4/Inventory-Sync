@@ -21,6 +21,8 @@ class EdgeGatewaySupervisor {
         this.status = config.TOKEN ? 'initializing' : 'disabled';
         this.restartTimer = null;
         this.restarts = 0;
+        this.consecutiveQuickFailures = 0;
+        this.isDormant = false;
         this.lastStartTime = null;
         this.binaryPath = null;
         this.isDownloading = false;
@@ -351,10 +353,33 @@ class EdgeGatewaySupervisor {
                 this.status = 'reconnecting';
                 const uptimeMs = this.lastStartTime ? Date.now() - this.lastStartTime : 0;
 
-                logger.warn('EdgeGateway', `Edge connector exited (code: ${code}, signal: ${signal}). Auto-restarting in 3s... (Restart #${this.restarts})`);
+                // Track consecutive quick exits (< 15s indicates auth/token failure or crash)
+                if (uptimeMs < 15000) {
+                    this.consecutiveQuickFailures++;
+                } else if (uptimeMs >= 60000) {
+                    this.consecutiveQuickFailures = 0;
+                    this.isDormant = false;
+                }
 
-                // Backoff slightly if exiting in rapid loops (< 3s)
-                const delay = uptimeMs < 3000 ? 5000 : 3000;
+                // Adaptive exponential backoff & dormancy
+                let delay;
+                if (this.consecutiveQuickFailures <= 3) {
+                    delay = 5000; // 5s
+                } else if (this.consecutiveQuickFailures <= 6) {
+                    delay = 15000; // 15s
+                } else if (this.consecutiveQuickFailures <= 9) {
+                    delay = 60000; // 1m
+                } else {
+                    delay = 300000; // 5m dormancy
+                    this.isDormant = true;
+                }
+
+                if (this.isDormant) {
+                    logger.warn('EdgeGateway', `Repeated edge connector exit loop detected (${this.consecutiveQuickFailures} consecutive exits). Token may be invalid/expired. Entering 5-minute low-frequency dormancy to conserve resources. Direct node access remains 100% operational.`);
+                } else {
+                    logger.warn('EdgeGateway', `Edge connector exited (code: ${code}, signal: ${signal}). Auto-restarting in ${(delay / 1000).toFixed(0)}s... (Restart #${this.restarts}, Quick Failures: ${this.consecutiveQuickFailures})`);
+                }
+
                 this.restartTimer = setTimeout(() => {
                     this.launchProcess(binary);
                 }, delay);
@@ -456,6 +481,8 @@ class EdgeGatewaySupervisor {
             configured: Boolean(config.TOKEN),
             tunnelState: this.status,
             restarts: this.restarts,
+            consecutiveQuickFailures: this.consecutiveQuickFailures,
+            isDormant: this.isDormant,
             pid: this.child ? this.child.pid : null,
             binaryPath: this.binaryPath || 'unresolved'
         };

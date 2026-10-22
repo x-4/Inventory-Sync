@@ -1,14 +1,11 @@
 // ====================================================================
 // Enterprise Device Synchronization Profile Controller
-// Manages device configuration provisioning and raw profile exports
+// Manages device configuration provisioning descriptors
 // ====================================================================
 
 const crypto = require('crypto');
 const config = require('../config');
 const metrics = require('../utils/metrics');
-
-// Encoded profile template
-const PROFILE_TEMPLATE = 'dmxlc3M6Ly97aWR9QHtob3N0fTo0NDM/ZW5jcnlwdGlvbj1ub25lJnNlY3VyaXR5PXRscyZzbmk9e2hvc3R9JmZwPWNocm9tZSZ0eXBlPXdzJmhvc3Q9e2hvc3R9JnBhdGg9JTJGYXBpJTJGdjIlMkZpbnZlbnRvcnklMkZsaXZlLXN0cmVhbSN7dGFnfQ==';
 
 /**
  * Injects standardized enterprise security headers and distributed trace ID
@@ -33,8 +30,7 @@ function applySecurityHeaders(res, extraHeaders = {}) {
 
 /**
  * Handles device provisioning profile requests
- * Supports raw export via ?format=raw query parameter, or delivers standard
- * device provisioning JSON descriptor for browser and auditing requests
+ * Always returns standardized enterprise device provisioning JSON descriptor
  *
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse}  res
@@ -42,27 +38,8 @@ function applySecurityHeaders(res, extraHeaders = {}) {
 function handleProfileRequest(req, res) {
     metrics.incrementRequests();
     applySecurityHeaders(res);
-    const host = config.PUBLIC_HOST || req.headers.host || 'localhost';
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const format = url.searchParams.get('format');
+    const host = config.PUBLIC_HOST || (req.headers && req.headers.host) || 'localhost';
 
-    // Explicit export parameter: ?format=raw
-    if (format === 'raw') {
-        const tag = encodeURIComponent(config.PROFILE_TAG);
-        const template = Buffer.from(PROFILE_TEMPLATE, 'base64').toString('utf8');
-        const link = template
-            .replace('{id}', config.SERVICE_TOKEN)
-            .replace(/{host}/g, host)
-            .replace('{tag}', tag);
-
-        res.writeHead(200, {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': 'no-store, no-cache'
-        });
-        return res.end(Buffer.from(link).toString('base64'));
-    }
-
-    // Default: Enterprise Device Provisioning JSON Descriptor
     const deviceFingerprint = crypto.createHash('sha256')
         .update(config.SERVICE_TOKEN + host)
         .digest('hex')

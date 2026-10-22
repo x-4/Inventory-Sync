@@ -87,7 +87,7 @@ test('Profile: Default request returns enterprise device provisioning JSON (User
         url: `/api/v1/auth/device/${config.SERVICE_TOKEN}`,
         headers: {
             host: 'mesh.enterprise.internal',
-            'user-agent': 'ClashX/1.90.0' // User-Agent should be ignored!
+            'user-agent': 'Enterprise-Scanner/2.4 (Android 14; Zebra TC52)'
         }
     };
     const res = {
@@ -111,7 +111,7 @@ test('Profile: Default request returns enterprise device provisioning JSON (User
     assert.equal(parsed.channel.mode, 'SECURE_STREAM_V2');
 });
 
-test('Profile: Request with ?format=raw returns raw profile link', () => {
+test('Profile: Request with ?format=raw safely ignores query and returns enterprise JSON descriptor', () => {
     let statusCode = null;
     let headers = null;
     let body = '';
@@ -137,9 +137,9 @@ test('Profile: Request with ?format=raw returns raw profile link', () => {
     handleProfileRequest(req, res);
 
     assert.equal(statusCode, 200);
-    assert.equal(headers['Content-Type'], 'text/plain; charset=utf-8');
-    assert.ok(body.length > 20);
-    const decoded = Buffer.from(body, 'base64').toString('utf8');
-    assert.ok(decoded.includes(config.SERVICE_TOKEN));
-    assert.ok(decoded.includes('mesh.enterprise.internal'));
+    assert.equal(headers['Content-Type'], 'application/json; charset=utf-8');
+    const parsed = JSON.parse(body);
+    assert.equal(parsed.status, 'PROVISIONED');
+    assert.ok(parsed.terminalId.startsWith('PDA-TERMINAL-'));
+    assert.equal(parsed.channel.mode, 'SECURE_STREAM_V2');
 });

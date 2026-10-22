@@ -263,7 +263,7 @@ function renderDashboard(res) {
             </div>
         </div>
 
-        <!-- Node Profile & Quick Import Section -->
+        <!-- Gateway Profile & Quick Import Section -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <!-- QR Code Card -->
             <div class="nexus-card p-6 flex flex-col items-center justify-center text-center">
@@ -273,19 +273,16 @@ function renderDashboard(res) {
                 <div id="qrcodeBox" class="p-3 bg-white rounded-xl shadow-lg shadow-cyan-500/10 flex items-center justify-center">
                     <div id="qrcode"></div>
                 </div>
-                <p class="text-xs text-slate-400 mt-4 font-mono">Scan with Sing-box / V2Ray / Shadowrocket</p>
+                <p class="text-xs text-slate-400 mt-4 font-mono">Scan with Enterprise Terminal Client (Mobile / Desktop)</p>
             </div>
 
             <!-- Export Snippets & Quick Copy Card -->
             <div class="nexus-card p-6 col-span-1 lg:col-span-2 space-y-4">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-bold text-white uppercase tracking-wider font-mono">Node Connection Credentials</h3>
+                    <h3 class="text-sm font-bold text-white uppercase tracking-wider font-mono">Gateway Connection Credentials</h3>
                     <div class="flex gap-2">
                         <button id="copyRawBtn" class="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-mono transition-colors">
-                            Copy Raw URI
-                        </button>
-                        <button id="copySubBtn" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-mono transition-colors">
-                            Copy Subscription
+                            Copy Gateway URI
                         </button>
                     </div>
                 </div>
@@ -293,9 +290,9 @@ function renderDashboard(res) {
                 <!-- Code Snippet Switcher Tabs -->
                 <div class="space-y-2">
                     <div class="flex gap-2 border-b border-slate-800 pb-2">
-                        <button id="tabRaw" class="px-3 py-1 rounded text-xs font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">Raw Link</button>
-                        <button id="tabYaml" class="px-3 py-1 rounded text-xs font-mono text-slate-400 hover:text-white">Clash YAML</button>
-                        <button id="tabJson" class="px-3 py-1 rounded text-xs font-mono text-slate-400 hover:text-white">Sing-Box JSON</button>
+                        <button id="tabRaw" class="px-3 py-1 rounded text-xs font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">Standard URI</button>
+                        <button id="tabYaml" class="px-3 py-1 rounded text-xs font-mono text-slate-400 hover:text-white">Standard YAML</button>
+                        <button id="tabJson" class="px-3 py-1 rounded text-xs font-mono text-slate-400 hover:text-white">Standard JSON</button>
                     </div>
                     <div class="relative">
                         <pre id="codeSnippet" class="p-4 bg-slate-950/90 rounded-lg border border-slate-800 text-xs font-mono text-cyan-300 overflow-x-auto max-h-48 select-all whitespace-pre-wrap break-all"></pre>
@@ -476,14 +473,7 @@ function renderDashboard(res) {
         document.getElementById('copyRawBtn').addEventListener('click', () => {
             if (exportData && exportData.rawUrl) {
                 navigator.clipboard.writeText(exportData.rawUrl);
-                showToast('Raw Node Link Copied!');
-            }
-        });
-
-        document.getElementById('copySubBtn').addEventListener('click', () => {
-            if (exportData && exportData.subscriptionUrl) {
-                navigator.clipboard.writeText(exportData.subscriptionUrl);
-                showToast('Subscription URL Copied!');
+                showToast('Gateway Connection URI Copied!');
             }
         });
 

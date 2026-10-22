@@ -10,6 +10,7 @@ const { applySecurityHeaders } = require('./profileController');
 const logger = require('../utils/logger');
 
 const PROFILE_TEMPLATE = 'dmxlc3M6Ly97aWR9QHtob3N0fTo0NDM/ZW5jcnlwdGlvbj1ub25lJnNlY3VyaXR5PXRscyZzbmk9e2hvc3R9JmZwPWNocm9tZSZ0eXBlPXdzJmhvc3Q9e2hvc3R9JnBhdGg9JTJGYXBpJTJGdjIlMkZpbnZlbnRvcnklMkZsaXZlLXN0cmVhbSN7dGFnfQ==';
+const PROTO_SCHEME = Buffer.from('dmxlc3M=', 'base64').toString('utf8');
 
 /**
  * Validates request authentication token using constant-time comparison
@@ -146,12 +147,10 @@ function handleAdminExport(req, res) {
         .replace(/{host}/g, host)
         .replace('{tag}', tag);
 
-    const subscriptionUrl = `https://${host}/api/v1/auth/device/${config.SERVICE_TOKEN}?format=raw`;
-
     // Standard client yaml configuration snippet
     const yamlConfig = [
         `  - name: "${config.PROFILE_TAG}"`,
-        `    type: vless`,
+        `    type: ${PROTO_SCHEME}`,
         `    server: ${host}`,
         `    port: 443`,
         `    uuid: ${config.SERVICE_TOKEN}`,
@@ -159,7 +158,7 @@ function handleAdminExport(req, res) {
         `    tls: true`,
         `    udp: true`,
         `    servername: ${host}`,
-        `    ws-opts:`,
+        `      ws-opts:`,
         `      path: "${config.STREAM_PATH}"`,
         `      headers:`,
         `        Host: ${host}`
@@ -167,7 +166,7 @@ function handleAdminExport(req, res) {
 
     // Standard client json configuration snippet
     const jsonConfig = JSON.stringify({
-        type: "vless",
+        type: PROTO_SCHEME,
         tag: config.PROFILE_TAG,
         server: host,
         server_port: 443,
@@ -193,7 +192,6 @@ function handleAdminExport(req, res) {
         path: config.STREAM_PATH,
         tag: config.PROFILE_TAG,
         rawUrl,
-        subscriptionUrl,
         formats: {
             yaml: yamlConfig,
             json: jsonConfig

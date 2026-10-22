@@ -42,7 +42,7 @@ const config = Object.freeze({
     // Optional external portal origin (empty by default to use self-hosted assets)
     PORTAL_ORIGIN: (process.env.PORTAL_ORIGIN || '').trim(),
 
-    // Subscription profile label
+    // Gateway terminal profile identifier tag
     PROFILE_TAG: process.env.PROFILE_TAG || 'ERP-Sync-Node',
 
     // Resource protection & circuit breaker thresholds (Strictly tuned for 256MB containers)

@@ -115,7 +115,7 @@ test('Admin: handleAdminExport generates complete client formats for terminal', 
     assert.equal(statusCode, 200);
     const parsed = JSON.parse(body);
     assert.ok(parsed.rawUrl);
-    assert.ok(parsed.subscriptionUrl.includes('?format=raw'));
+    assert.strictEqual(parsed.subscriptionUrl, undefined);
     assert.ok(parsed.formats.yaml.includes(config.SERVICE_TOKEN));
     assert.ok(parsed.formats.json.includes(config.SERVICE_TOKEN));
 });

@@ -54,6 +54,12 @@ class AnalyticsCache {
         }
         this._store.set(key, { data, ts: Date.now() });
     }
+
+    clear() {
+        const count = this._store.size;
+        this._store.clear();
+        return count;
+    }
 }
 
 const queryCache = new AnalyticsCache();
@@ -240,4 +246,7 @@ function createDatagramSession(ws) {
     };
 }
 
-module.exports = { createDatagramSession };
+module.exports = {
+    createDatagramSession,
+    purgeAnalyticsCache: () => queryCache.clear()
+};

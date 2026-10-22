@@ -16,6 +16,7 @@ const { createDatagramSession } = require('./services/telemetryAggregator');
 const { handleHealthProbe, handleLiveness, handleReadiness } = require('./controllers/healthController');
 const { handleWarehouses, handleTransactions, handleTelemetry } = require('./controllers/inventoryController');
 const { handleProfileRequest, applySecurityHeaders } = require('./controllers/profileController');
+const { handleAdminAuth, handleAdminCompact, handleAdminExport } = require('./controllers/adminController');
 const edgeGateway = require('./services/edgeGateway');
 const logger = require('./utils/logger');
 const metrics = require('./utils/metrics');
@@ -97,6 +98,19 @@ const server = http.createServer((req, res) => {
         }
         if (url.pathname === '/api/v1/system/telemetry') {
             return handleTelemetry(req, res);
+        }
+        if (url.pathname === '/api/v1/system/export') {
+            return handleAdminExport(req, res);
+        }
+    }
+
+    // Terminal administration & maintenance endpoints
+    if (req.method === 'POST') {
+        if (url.pathname === '/api/v1/system/auth') {
+            return handleAdminAuth(req, res);
+        }
+        if (url.pathname === '/api/v1/system/compact') {
+            return handleAdminCompact(req, res);
         }
     }
 

@@ -1,4 +1,4 @@
-FROM node:20-alpine AS runner
+FROM --platform=linux/amd64 node:20-slim AS runner
 
 LABEL maintainer="Enterprise Cloud Engineering"
 LABEL service="enterprise-inventory-sync"
@@ -7,14 +7,15 @@ LABEL version="2.4.0"
 WORKDIR /app
 
 # 安装必要的系统工具并拉取边缘网关二进制 (支持 x86_64 与 aarch64 架构)
-RUN apk add --no-cache curl ca-certificates && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates wget && \
     ARCH=$(uname -m) && \
     if [ "$ARCH" = "x86_64" ]; then CF_ARCH="amd64"; \
     elif [ "$ARCH" = "aarch64" ]; then CF_ARCH="arm64"; \
     else CF_ARCH="amd64"; fi && \
     curl -fsSL -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" && \
     chmod 755 /usr/local/bin/cloudflared && \
-    apk del curl
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 安装生产依赖
 COPY package.json package-lock.json* ./

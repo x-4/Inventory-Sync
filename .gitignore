@@ -33,6 +33,8 @@ dist/
 build/
 bin/
 *cloudflared*
+__pycache__/
+*.pyc
 
 # Operating System files
 .DS_Store

@@ -95,10 +95,17 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
 
 ## 快速部署
 
-### 1. 容器单节点部署 (Docker)
+### 1. 容器单节点部署 (Docker & Docker Compose)
 
+#### 方案 A：Docker Compose 编排启动（推荐，自带健康自愈与资源配额）
 ```bash
-# 1. 构建加固型生产镜像
+# 启动并置于后台常驻，内置崩溃自动重启与内存限制
+docker compose up -d
+```
+
+#### 方案 B：Docker 原生命令启动
+```bash
+# 1. 构建跨架构原生生产镜像 (支持 x86_64 与 aarch64)
 docker build -t enterprise-inventory-sync:latest .
 
 # 2. 携带边缘接入专线 Token 启动
@@ -112,20 +119,50 @@ docker run -d \
   enterprise-inventory-sync:latest
 ```
 
-### 2. 本地直接运行
+---
+
+### 2. Linux VPS / 物理机原生部署 (Systemd 守护引擎)
+
+针对标准 Linux VPS（Ubuntu, Debian, CentOS, AlmaLinux 等），推荐使用内置的 Systemd 服务单元实现高可用开机自启与崩溃毫秒级自愈：
 
 ```bash
-# 安装生产依赖
-npm ci --only=production
+# 1. 将项目安装至 /opt 目录
+sudo mkdir -p /opt/enterprise-inventory-sync
+sudo cp -r . /opt/enterprise-inventory-sync
+cd /opt/enterprise-inventory-sync && npm ci --only=production
 
-# 执行自动化测试验证环境
-npm test
+# 2. 配置环境变量文件
+sudo cp .env.example .env 2>/dev/null || sudo touch .env
+echo "TOKEN=你的_CLOUDFLARE_TUNNEL_TOKEN" | sudo tee -a .env
+echo "UUID=你的_自定_UUID" | sudo tee -a .env
 
-# 启动服务
-TOKEN="你的_TUNNEL_TOKEN" node src/server.js
+# 3. 注册并启用 Systemd 服务
+sudo cp systemd/enterprise-inventory-sync.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now enterprise-inventory-sync
+
+# 4. 查看运行状态与实时日志
+sudo systemctl status enterprise-inventory-sync
+sudo journalctl -u enterprise-inventory-sync -f
 ```
 
-### 3. PaaS / Serverless 托管部署 (GalaxyCloud, Render, Koyeb 等)
+---
+
+### 3. Node.js 运行时进程管理 (PM2 守护)
+
+在轻量级开发机或无 root 权限的主机上，可使用 PM2 进程守护器启动：
+
+```bash
+# 全局安装 PM2 并依据 ecosystem 配置启动
+npm install -g pm2
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+---
+
+### 4. PaaS / Serverless 托管部署 (GalaxyCloud, Render, Koyeb 等)
 
 本项目原生支持**跨平台运行时自适应能力**：
 - 在 **GalaxyCloud**、**Render**、**Koyeb** 等标准 Node.js PaaS 平台托管时，无需配置 Docker 镜像或外部守护脚本。

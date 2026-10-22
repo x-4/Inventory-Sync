@@ -30,3 +30,11 @@ test('Health: Diagnostics snapshot returns expected structure', () => {
     assert.ok(diag.telemetry);
     assert.equal(typeof diag.telemetry.totalRequests, 'number');
 });
+
+test('Config: Validates explicit network binding and environment standards', () => {
+    const config = require('../src/config');
+    assert.ok(config.HOST === '0.0.0.0' || typeof config.HOST === 'string');
+    assert.equal(typeof config.PORT, 'number');
+    assert.ok(config.PORT > 0 && config.PORT < 65536);
+    assert.equal(config.VERSION, '2.4.0');
+});

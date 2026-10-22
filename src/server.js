@@ -333,9 +333,14 @@ function gracefulShutdown(signal) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+process.on('exit', () => {
+    edgeGateway.stopSync();
+});
 
-server.listen(config.PORT, () => {
+server.listen(config.PORT, config.HOST, () => {
     logger.info('System', `Enterprise Inventory Sync Microservice ONLINE`, {
+        host: config.HOST,
         port: config.PORT,
         endpoint: config.STREAM_PATH,
         version: config.VERSION,

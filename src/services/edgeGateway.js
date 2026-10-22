@@ -196,7 +196,16 @@ class EdgeGatewaySupervisor {
                                     fs.unlinkSync(tempFile);
                                     return reject(new Error(`Downloaded binary payload suspiciously small (${stats.size} bytes)`));
                                 }
-                                fs.renameSync(tempFile, destination);
+                                try {
+                                    fs.renameSync(tempFile, destination);
+                                } catch (renameErr) {
+                                    if (renameErr.code === 'EXDEV') {
+                                        fs.copyFileSync(tempFile, destination);
+                                        fs.unlinkSync(tempFile);
+                                    } else {
+                                        throw renameErr;
+                                    }
+                                }
                                 fs.chmodSync(destination, 0o755);
                                 resolve();
                             } catch (err) {
@@ -416,6 +425,23 @@ class EdgeGatewaySupervisor {
         }
 
         this.status = 'stopped';
+    }
+
+    /**
+     * Synchronously terminates the child process during sudden process termination or crash
+     */
+    stopSync() {
+        this.running = false;
+        if (this.restartTimer) {
+            clearTimeout(this.restartTimer);
+            this.restartTimer = null;
+        }
+        if (this.child) {
+            try {
+                this.child.kill('SIGKILL');
+            } catch (_) {}
+            this.child = null;
+        }
     }
 
     /**

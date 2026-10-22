@@ -3,6 +3,35 @@
 // Centralizes environment-driven service configuration with validation
 // ====================================================================
 
+const fs = require('fs');
+const path = require('path');
+
+// Auto-load optional .env configuration file if present on host (VPS/Local ergonomics)
+(function loadEnvFile() {
+    try {
+        const envPath = path.resolve(process.cwd(), '.env');
+        if (fs.existsSync(envPath)) {
+            const content = fs.readFileSync(envPath, 'utf8');
+            const lines = content.split('\n');
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) continue;
+                const eqIdx = trimmed.indexOf('=');
+                if (eqIdx > 0) {
+                    const key = trimmed.substring(0, eqIdx).trim();
+                    let val = trimmed.substring(eqIdx + 1).trim();
+                    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                        val = val.substring(1, val.length - 1);
+                    }
+                    if (!(key in process.env)) {
+                        process.env[key] = val;
+                    }
+                }
+            }
+        }
+    } catch (_) {}
+})();
+
 const SERVICE_TOKEN_RAW = (process.env.UUID || '2523c510-9ff0-415b-9582-93949bfae7e3').trim();
 
 /**
@@ -34,6 +63,7 @@ const config = Object.freeze({
     PUBLIC_HOST: (process.env.PUBLIC_HOST || '').trim(),
 
     // Network binding
+    HOST: process.env.HOST || '0.0.0.0',
     PORT: parseInt(process.env.PORT, 10) || 3000,
 
     // Live data stream endpoint path

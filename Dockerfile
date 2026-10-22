@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 node:20-slim AS runner
+FROM node:20-slim AS runner
 
 LABEL maintainer="Enterprise Cloud Engineering"
 LABEL service="enterprise-inventory-sync"
@@ -26,7 +26,10 @@ COPY src/ ./src/
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
-# 切换为 Alpine 内置非特权用户 node
+# 预先创建并授权工作区与状态缓存目录，确保非特权用户 node 拥有完整读写权
+RUN mkdir -p /app/bin && chown -R node:node /app
+
+# 切换为非特权用户 node
 USER node
 
 ENV NODE_ENV=production

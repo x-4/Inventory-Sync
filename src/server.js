@@ -6,6 +6,8 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
+const cluster = require('cluster');
+const os = require('os');
 
 const config = require('./config');
 const BatchDecoder = require('./protocol/batchDecoder');
@@ -29,6 +31,54 @@ if (process.argv.includes('--doctor')) {
     runDoctorDiagnostics().then((success) => {
         process.exit(success ? 0 : 1);
     });
+    return;
+}
+
+// Cluster Orchestration Supervisor (P2: Adaptive Multi-Core Scheduling)
+if (process.env.CLUSTER_MODE === 'true' && cluster.isPrimary) {
+    const cpuCount = os.cpus().length;
+    const workerCount = parseInt(process.env.CLUSTER_WORKERS, 10) || Math.min(cpuCount, 8);
+    logger.info('System', `Cluster mode active: master supervisor (PID: ${process.pid}) spawning ${workerCount} worker instances...`);
+
+    edgeGateway.initialize().catch((err) => {
+        logger.error('EdgeGateway', `Supervisor tunnel startup error: ${err.message}`);
+    });
+
+    let clusterShuttingDown = false;
+
+    for (let i = 0; i < workerCount; i++) {
+        cluster.fork();
+    }
+
+    cluster.on('exit', (worker, code, signal) => {
+        if (!clusterShuttingDown) {
+            logger.warn('System', `Cluster worker ${worker.process.pid} died (${signal || code}). Respawning replacement worker...`);
+            cluster.fork();
+        }
+    });
+
+    process.on('SIGHUP', async () => {
+        logger.info('System', 'Master received SIGHUP. Reloading configuration, edgeGateway and notifying workers...');
+        config.reload();
+        await edgeGateway.reload(config.TOKEN);
+        for (const id in cluster.workers) {
+            try { cluster.workers[id].process.kill('SIGHUP'); } catch (_) {}
+        }
+    });
+
+    const shutdownCluster = (signal) => {
+        if (clusterShuttingDown) return;
+        clusterShuttingDown = true;
+        logger.info('System', `Master received ${signal}. Terminating all cluster workers...`);
+        edgeGateway.stop();
+        for (const id in cluster.workers) {
+            try { cluster.workers[id].process.kill(signal); } catch (_) {}
+        }
+        setTimeout(() => process.exit(0), 10000).unref();
+    };
+
+    process.on('SIGTERM', () => shutdownCluster('SIGTERM'));
+    process.on('SIGINT', () => shutdownCluster('SIGINT'));
     return;
 }
 
@@ -89,8 +139,8 @@ const server = http.createServer((req, res) => {
         }
     }
 
-    // Device synchronization profile endpoint
-    if (req.method === 'GET' && url.pathname === `/api/v1/auth/device/${config.SERVICE_TOKEN}`) {
+    // Device synchronization profile endpoint (matches primary or any configured tenant UUID)
+    if (req.method === 'GET' && config.SERVICE_TOKENS.some(token => url.pathname === `/api/v1/auth/device/${token}`)) {
         return handleProfileRequest(req, res);
     }
 
@@ -99,8 +149,18 @@ const server = http.createServer((req, res) => {
         return renderDashboard(res);
     }
 
-    // Medium Priority #5: High-fidelity enterprise REST API facades
+    // High-fidelity enterprise REST API facades & Prometheus exporter
     if (req.method === 'GET') {
+        // Standard OpenMetrics / Prometheus scraping endpoint (P2)
+        if (url.pathname === '/metrics' || url.pathname === '/api/v1/system/metrics') {
+            const metricsText = metrics.toPrometheusFormat();
+            res.writeHead(200, {
+                'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+                'Cache-Control': 'no-store, no-cache'
+            });
+            return res.end(metricsText);
+        }
+
         if (url.pathname === '/api/v1/inventory/warehouses') {
             return handleWarehouses(req, res);
         }
@@ -242,11 +302,19 @@ const heartbeatTimer = setInterval(() => {
 // Handle incoming stream connections
 streamServer.on('connection', (ws, request) => {
     const clientIp = (request && request.clientIp) || (request ? resolvePublicIngress(request).clientIp : (ws._socket && ws._socket.remoteAddress) || '127.0.0.1');
+    const streamId = 'st-' + crypto.randomBytes(3).toString('hex');
+    ws.streamId = streamId;
+
+    let authenticatedTenant = null;
 
     // Defense against Slowloris-style hanging unauthenticated connections:
     // Terminate connection if no valid batch sync handshake packet received within 10 seconds
     const authTimer = setTimeout(() => {
-        logger.warn('Auth', `Handshake timed out for ${clientIp} (unauthenticated client), terminating connection.`);
+        logger.warn('Auth', `Handshake timed out for ${clientIp} (unauthenticated client), terminating connection.`, {
+            streamId,
+            clientIp,
+            code: 'ERR_AUTH_TIMEOUT'
+        });
         probeShield.recordFailure(clientIp);
         try { ws.close(); } catch (_) { ws.terminate(); }
     }, HANDSHAKE_TIMEOUT_MS);
@@ -266,6 +334,10 @@ streamServer.on('connection', (ws, request) => {
         if (cleaned) return;
         cleaned = true;
         clearTimeout(authTimer);
+        if (authenticatedTenant) {
+            metrics.decrementTenantStream(authenticatedTenant);
+            authenticatedTenant = null;
+        }
         if (link) {
             link.destroy();
             link = null;
@@ -280,7 +352,11 @@ streamServer.on('connection', (ws, request) => {
 
             const header = decoder.decodeHeader(msg);
             if (!header) {
-                logger.warn('Auth', `Invalid batch payload signature from ${clientIp}. Returning enterprise protocol rejection.`);
+                logger.warn('Auth', `Invalid batch payload signature from ${clientIp}. Returning enterprise protocol rejection.`, {
+                    streamId,
+                    clientIp,
+                    code: 'ERR_INVALID_SIGNATURE'
+                });
                 metrics.incrementRejections();
                 probeShield.recordFailure(clientIp);
 
@@ -306,6 +382,8 @@ streamServer.on('connection', (ws, request) => {
             }
 
             // Valid signature authenticated
+            authenticatedTenant = header.serviceToken;
+            metrics.recordTenantStream(authenticatedTenant);
             probeShield.recordSuccess(clientIp);
 
             // Send handshake acknowledgement frame
@@ -319,13 +397,13 @@ streamServer.on('connection', (ws, request) => {
                     try { ws.close(); } catch (_) { ws.terminate(); }
                     return;
                 }
-                datagramSession = createDatagramSession(ws);
+                datagramSession = createDatagramSession(ws, streamId);
                 datagramSession.initWith(payload);
                 return;
             }
 
             // Reliable stream mode (warehouse data synchronization with adaptive backpressure)
-            link = createWarehouseLink(ws, header, payload);
+            link = createWarehouseLink(ws, header, payload, streamId);
             return;
         }
 
@@ -424,10 +502,12 @@ server.listen(config.PORT, config.HOST, () => {
         maxHeapQuota: `${config.MAX_HEAP_MB}MB`
     });
 
-    // Initialize cross-platform edge tunnel supervisor asynchronously
-    edgeGateway.initialize().catch((err) => {
-        logger.error('EdgeGateway', `Background supervisor startup error: ${err.message}`);
-    });
+    // Initialize cross-platform edge tunnel supervisor asynchronously (standalone or master only)
+    if (!cluster.isWorker) {
+        edgeGateway.initialize().catch((err) => {
+            logger.error('EdgeGateway', `Background supervisor startup error: ${err.message}`);
+        });
+    }
 
     // Medium Priority #7: Low-frequency enterprise reconciliation event injection (every 5 minutes)
     const AUDIT_HUBS = ['WH-TOKYO-01', 'WH-FRANKFURT-02', 'WH-VIRGINIA-01', 'WH-SINGAPORE-01'];

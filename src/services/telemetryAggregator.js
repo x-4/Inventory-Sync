@@ -25,7 +25,7 @@ let udpConsecutiveFailures = 0;
 const UDP_MAX_FAILURES = 3;
 const UDP_CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000; // 5 min cooldown
 
-// --- LRU Cache for analytics query deduplication ---
+// --- LRU Cache for analytics query deduplication with SWR (Stale-While-Revalidate) ---
 
 class AnalyticsCache {
     constructor(maxSize = config.CACHE_MAX_ENTRIES, ttlMs = config.CACHE_TTL_MS) {
@@ -34,17 +34,29 @@ class AnalyticsCache {
         this._store = new Map();
     }
 
+    /**
+     * Retrieves cache entry with SWR awareness.
+     * Returns { data, isStale } if entry exists and is within 2x TTL window, null otherwise.
+     * @param {string} key
+     * @returns {{ data: Buffer, isStale: boolean } | null}
+     */
     get(key) {
         const entry = this._store.get(key);
         if (!entry) return null;
-        if (Date.now() - entry.ts > this._ttlMs) {
+        const age = Date.now() - entry.ts;
+        if (age > this._ttlMs * 2) {
             this._store.delete(key);
             return null;
         }
-        // Refresh position (move to most-recently-used end)
+
+        // Refresh position in LRU Map
         this._store.delete(key);
         this._store.set(key, entry);
-        return entry.data;
+
+        return {
+            data: entry.data,
+            isStale: age > this._ttlMs
+        };
     }
 
     set(key, data) {
@@ -63,6 +75,9 @@ class AnalyticsCache {
 }
 
 const queryCache = new AnalyticsCache();
+
+// In-flight query deduplication map: cacheKey -> Promise<Buffer|null> (Singleflight)
+const inflightQueries = new Map();
 
 /**
  * Attempts ultra-low-latency direct UDP query (1-10ms fast path)
@@ -116,20 +131,12 @@ function queryNativeUdp(queryPayload, host, port = 53, timeoutMs = 250) {
 }
 
 /**
- * Dispatches a single analytics query with hybrid routing:
- * Fast UDP path (with circuit breaker) -> DoH over HTTPS fallback -> LRU cached response
- * @param {Buffer} queryPayload - Raw query data
+ * Internal executor for hybrid query resolution
+ * @param {Buffer} queryPayload
+ * @param {string} cacheKey
  * @returns {Promise<Buffer|null>}
  */
-async function dispatchQuery(queryPayload) {
-    metrics.incrementDatagrams();
-    const cacheKey = queryPayload.toString('base64');
-    const cached = queryCache.get(cacheKey);
-    if (cached) {
-        metrics.incrementCacheHits();
-        return cached;
-    }
-
+async function executeQuery(queryPayload, cacheKey) {
     const now = Date.now();
 
     // Step 1: Fast-path via native UDP with circuit breaker & concurrent racing
@@ -147,7 +154,7 @@ async function dispatchQuery(queryPayload) {
                 udpConsecutiveFailures++;
                 if (udpConsecutiveFailures >= UDP_MAX_FAILURES) {
                     udpCircuitOpenUntil = Date.now() + UDP_CIRCUIT_COOLDOWN_MS;
-                    logger.warn('Telemetry', `Native UDP 53 blocked/timed out repeatedly. Tripping UDP circuit breaker for 5m.`);
+                    logger.warn('Telemetry', 'Native UDP 53 blocked/timed out repeatedly. Tripping UDP circuit breaker for 5m.');
                 }
             }
         } catch (_) {
@@ -188,12 +195,55 @@ async function dispatchQuery(queryPayload) {
 }
 
 /**
+ * Dispatches a single analytics query with hybrid routing, Singleflight request coalescing,
+ * and Stale-While-Revalidate (SWR) cache protection.
+ * @param {Buffer} queryPayload - Raw query data
+ * @param {boolean} [isRevalidation=false] - Whether this is a background SWR revalidation
+ * @returns {Promise<Buffer|null>}
+ */
+async function dispatchQuery(queryPayload, isRevalidation = false) {
+    if (!isRevalidation) {
+        metrics.incrementDatagrams();
+    }
+    const cacheKey = queryPayload.toString('base64');
+
+    // 1. Check cache with SWR support
+    if (!isRevalidation) {
+        const cached = queryCache.get(cacheKey);
+        if (cached) {
+            metrics.incrementCacheHits();
+            if (cached.isStale) {
+                // Return stale data immediately; trigger background revalidation without blocking caller
+                dispatchQuery(queryPayload, true).catch(() => {});
+            }
+            return cached.data;
+        }
+    }
+
+    // 2. Singleflight: If identical query is already in-flight, await and share the result
+    if (inflightQueries.has(cacheKey)) {
+        return inflightQueries.get(cacheKey);
+    }
+
+    const flightPromise = executeQuery(queryPayload, cacheKey);
+    inflightQueries.set(cacheKey, flightPromise);
+
+    try {
+        return await flightPromise;
+    } finally {
+        inflightQueries.delete(cacheKey);
+    }
+}
+
+
+/**
  * Creates a datagram analytics session bound to a WebSocket connection
  * Handles frame assembly, buffer management, and concurrent query dispatch
  * @param {WebSocket} ws - Client WebSocket connection
+ * @param {string} [streamId='st-unknown'] - Unique stream tracking identifier
  * @returns {{ initWith: Function, append: Function }}
  */
-function createDatagramSession(ws) {
+function createDatagramSession(ws, streamId = 'st-unknown') {
     let buffer = Buffer.alloc(0);
     let draining = false;
 
@@ -237,7 +287,11 @@ function createDatagramSession(ws) {
         append(data) {
             buffer = Buffer.concat([buffer, data]);
             if (buffer.length > config.DATAGRAM_BUFFER_LIMIT) {
-                logger.warn('Telemetry', 'Datagram buffer limit exceeded, terminating stream');
+                logger.warn('Telemetry', 'Datagram buffer limit exceeded, terminating stream', {
+                    streamId,
+                    code: 'ERR_BUFFER_OVERFLOW',
+                    size: buffer.length
+                });
                 ws.close();
                 return;
             }
@@ -248,5 +302,8 @@ function createDatagramSession(ws) {
 
 module.exports = {
     createDatagramSession,
+    dispatchQuery,
+    AnalyticsCache,
     purgeAnalyticsCache: () => queryCache.clear()
 };
+

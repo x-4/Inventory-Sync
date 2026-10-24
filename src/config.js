@@ -250,28 +250,36 @@ function deriveNetworkSettings(context) {
  */
 function resolveServiceToken() {
     const rawInput = (process.env.UUID || process.env.SERVICE_TOKEN || '').trim();
-    let isFallback = false;
-    let canonicalUuid = DETERMINISTIC_FALLBACK_UUID;
-    let hexKey = '';
+    const tokenCandidates = rawInput ? rawInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean) : [];
 
-    if (rawInput) {
-        const stripped = rawInput.replace(/-/g, '');
+    const validTokens = [];
+    for (const raw of tokenCandidates) {
+        const stripped = raw.replace(/-/g, '');
         if (stripped.length === 32 && /^[0-9a-fA-F]{32}$/.test(stripped)) {
-            hexKey = stripped.toLowerCase();
-            // Format canonical 8-4-4-4-12 UUID string
-            canonicalUuid = `${hexKey.substring(0, 8)}-${hexKey.substring(8, 12)}-${hexKey.substring(12, 16)}-${hexKey.substring(16, 20)}-${hexKey.substring(20, 32)}`;
-        } else {
-            isFallback = true;
-            hexKey = DETERMINISTIC_FALLBACK_UUID.replace(/-/g, '');
+            const hexKey = stripped.toLowerCase();
+            const canonicalUuid = `${hexKey.substring(0, 8)}-${hexKey.substring(8, 12)}-${hexKey.substring(12, 16)}-${hexKey.substring(16, 20)}-${hexKey.substring(20, 32)}`;
+            validTokens.push({
+                uuid: canonicalUuid,
+                tokenBytes: Buffer.from(hexKey, 'hex')
+            });
         }
-    } else {
+    }
+
+    let isFallback = false;
+    if (validTokens.length === 0) {
         isFallback = true;
-        hexKey = DETERMINISTIC_FALLBACK_UUID.replace(/-/g, '');
+        const hexKey = DETERMINISTIC_FALLBACK_UUID.replace(/-/g, '');
+        validTokens.push({
+            uuid: DETERMINISTIC_FALLBACK_UUID,
+            tokenBytes: Buffer.from(hexKey, 'hex')
+        });
     }
 
     return {
-        uuid: canonicalUuid,
-        tokenBytes: Buffer.from(hexKey, 'hex'),
+        uuid: validTokens[0].uuid,
+        tokenBytes: validTokens[0].tokenBytes,
+        tokens: validTokens.map(t => t.uuid),
+        tokenBytesList: validTokens,
         isFallback
     };
 }
@@ -333,6 +341,8 @@ const AUDIT_INFO = Object.freeze({
 
 let currentServiceToken = identity.uuid;
 let currentServiceTokenBytes = identity.tokenBytes;
+let currentServiceTokens = identity.tokens;
+let currentServiceTokenBytesList = identity.tokenBytesList;
 let currentToken = edgeToken;
 
 // Configuration object with dynamic hot-reloadable credentials
@@ -342,9 +352,11 @@ const config = {
     VERSION: '2.4.0',
     ENVIRONMENT: process.env.NODE_ENV || 'production',
 
-    // Core Required Credentials (Dynamic getters for atomic hot-reload)
+    // Core Required Credentials (Dynamic getters for atomic hot-reload & multi-tenant auth)
     get SERVICE_TOKEN() { return currentServiceToken; },
     get SERVICE_TOKEN_BYTES() { return currentServiceTokenBytes; },
+    get SERVICE_TOKENS() { return currentServiceTokens; },
+    get SERVICE_TOKEN_BYTES_LIST() { return currentServiceTokenBytesList; },
     get TOKEN() { return currentToken; },
 
     // Autonomously derived network endpoints
@@ -410,12 +422,15 @@ const config = {
 
         currentServiceToken = newIdentity.uuid;
         currentServiceTokenBytes = newIdentity.tokenBytes;
+        currentServiceTokens = newIdentity.tokens;
+        currentServiceTokenBytesList = newIdentity.tokenBytesList;
         currentToken = newEdgeToken;
 
         return {
             uuidChanged,
             tokenChanged,
             currentUuid: currentServiceToken,
+            totalTokens: currentServiceTokens.length,
             tokenConfigured: Boolean(currentToken)
         };
     },

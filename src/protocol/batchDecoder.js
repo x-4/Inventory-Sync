@@ -14,17 +14,31 @@ class BatchDecoder {
 
     /**
      * Validates the authentication segment of a batch payload header
-     * Uses constant-time comparison to prevent timing-based analysis
+     * Uses constant-time comparison against configured enterprise service tokens.
+     * In multi-tenant environments, verifies all active tokens securely.
      * @param {Buffer} buffer - Raw incoming data buffer
-     * @returns {boolean}
+     * @returns {string|false} Matched canonical UUID string on success, false on failure
      */
     validateSignature(buffer) {
         if (!Buffer.isBuffer(buffer) || buffer.length < 17) return false;
-        try {
-            return crypto.timingSafeEqual(buffer.subarray(1, 17), config.SERVICE_TOKEN_BYTES);
-        } catch {
-            return false;
+        const candidate = buffer.subarray(1, 17);
+        const tokenList = config.SERVICE_TOKEN_BYTES_LIST || [
+            { uuid: config.SERVICE_TOKEN, tokenBytes: config.SERVICE_TOKEN_BYTES }
+        ];
+
+        let matched = false;
+        let matchedUuid = null;
+
+        for (const entry of tokenList) {
+            try {
+                if (crypto.timingSafeEqual(candidate, entry.tokenBytes)) {
+                    matched = true;
+                    matchedUuid = entry.uuid;
+                }
+            } catch (_) {}
         }
+
+        return matched ? matchedUuid : false;
     }
 
     /**
@@ -58,7 +72,8 @@ class BatchDecoder {
      */
     decodeHeader(buffer) {
         if (!Buffer.isBuffer(buffer) || buffer.length < 24) return null;
-        if (!this.validateSignature(buffer)) return null;
+        const matchedUuid = this.validateSignature(buffer);
+        if (!matchedUuid) return null;
 
         const paddingLen = buffer[17];
         const baseOffset = 18 + paddingLen;
@@ -105,9 +120,11 @@ class BatchDecoder {
             addressFormat,
             targetPort,
             targetHost,
-            payloadStart
+            payloadStart,
+            serviceToken: matchedUuid
         };
     }
+
 }
 
 module.exports = BatchDecoder;

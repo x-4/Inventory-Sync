@@ -23,13 +23,16 @@ const UPSTREAM_CONNECT_TIMEOUT_MS = 15000; // 15s connection establishment timeo
  * @param {WebSocket} ws             - Client WebSocket connection
  * @param {object}    header         - Decoded batch header (targetHost, targetPort)
  * @param {Buffer}    initialPayload - First data chunk to forward after connect
+ * @param {string}    [streamId='st-unknown'] - Unique stream trace identifier
  * @returns {object|null} Connection handle with write() and destroy(), or null if blocked
  */
-function createWarehouseLink(ws, header, initialPayload) {
+function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown') {
     // 1. Initial network compliance check (Port & static hostname/IP blacklist)
     const policy = validateEndpoint(header.targetHost, header.targetPort);
     if (!policy.allowed) {
         logger.warn('Compliance', `Data link blocked by security policy: ${policy.reason}`, {
+            streamId,
+            code: 'ERR_SSRF_BLOCKED',
             destination: `${header.targetHost}:${header.targetPort}`
         });
         metrics.incrementRejections();
@@ -129,6 +132,8 @@ function createWarehouseLink(ws, header, initialPayload) {
         upstream.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
             if (!connected) {
                 logger.warn('Connector', `Connection to upstream timed out (${UPSTREAM_CONNECT_TIMEOUT_MS}ms)`, {
+                    streamId,
+                    code: 'ERR_UPSTREAM_TIMEOUT',
                     destination: `${header.targetHost}:${header.targetPort}`
                 });
                 cleanup();
@@ -139,6 +144,9 @@ function createWarehouseLink(ws, header, initialPayload) {
         upstream.on('data', (chunk) => {
             if (ws.readyState !== ws.OPEN) return;
             metrics.addBytes(chunk.length);
+            if (header.serviceToken) {
+                metrics.recordTenantBytes(header.serviceToken, chunk.length);
+            }
 
             ws.send(chunk, (err) => {
                 if (err) return;
@@ -160,6 +168,8 @@ function createWarehouseLink(ws, header, initialPayload) {
 
         upstream.on('error', (err) => {
             logger.error('Connector', `Upstream link error: ${err.message}`, {
+                streamId,
+                code: 'ERR_UPSTREAM_FAIL',
                 destination: `${header.targetHost}:${header.targetPort}`
             });
             cleanup();
@@ -175,6 +185,8 @@ function createWarehouseLink(ws, header, initialPayload) {
             if (cleaned) return;
             if (err || !addresses || addresses.length === 0) {
                 logger.warn('Connector', `DNS resolution failed for upstream destination: ${header.targetHost}`, {
+                    streamId,
+                    code: 'ERR_DNS_RESOLUTION',
                     error: err ? err.message : 'No addresses resolved'
                 });
                 cleanup();
@@ -189,7 +201,12 @@ function createWarehouseLink(ws, header, initialPayload) {
                     : isRestrictedIPv4(ip);
 
                 if (isRestricted) {
-                    logger.warn('Compliance', `SSRF/DNS Rebinding blocked: Host ${header.targetHost} resolved to restricted IP ${ip}`);
+                    logger.warn('Compliance', `SSRF/DNS Rebinding blocked: Host ${header.targetHost} resolved to restricted IP ${ip}`, {
+                        streamId,
+                        code: 'ERR_SSRF_BLOCKED',
+                        targetHost: header.targetHost,
+                        resolvedIp: ip
+                    });
                     metrics.incrementRejections();
                     cleanup();
                     return;
@@ -221,6 +238,9 @@ function createWarehouseLink(ws, header, initialPayload) {
             }
 
             metrics.addBytes(data.length);
+            if (header.serviceToken) {
+                metrics.recordTenantBytes(header.serviceToken, data.length);
+            }
             const canAcceptMore = upstream.write(data);
 
             if (!canAcceptMore) {

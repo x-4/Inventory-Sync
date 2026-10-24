@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateEndpoint } = require('../src/services/complianceValidator');
+const { validateEndpoint, resolveAndValidateEndpoint } = require('../src/services/complianceValidator');
 
 test('Compliance: Blocks RFC 1918 Private IPv4 Ranges', () => {
     assert.equal(validateEndpoint('10.0.0.1', 80).allowed, false);
@@ -43,3 +43,13 @@ test('Compliance: Permits Valid Public Hosts & Domains', () => {
     assert.equal(validateEndpoint('8.8.8.8', 53).allowed, true);
     assert.equal(validateEndpoint('api.github.com', 443).allowed, true);
 });
+
+test('Compliance: resolveAndValidateEndpoint detects restricted IP destinations directly', async () => {
+    const resPrivate = await resolveAndValidateEndpoint('10.200.1.5', 80);
+    assert.equal(resPrivate.allowed, false);
+
+    const resPublic = await resolveAndValidateEndpoint('1.1.1.1', 443);
+    assert.equal(resPublic.allowed, true);
+    assert.equal(resPublic.resolvedIp, '1.1.1.1');
+});
+

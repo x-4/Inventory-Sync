@@ -18,6 +18,8 @@ const { handleWarehouses, handleTransactions, handleTelemetry } = require('./con
 const { handleProfileRequest, applySecurityHeaders } = require('./controllers/profileController');
 const { handleAdminAuth, handleAdminCompact, handleAdminExport } = require('./controllers/adminController');
 const edgeGateway = require('./services/edgeGateway');
+const probeShield = require('./services/probeShield');
+const { resolvePublicIngress } = require('./utils/ingressResolver');
 const logger = require('./utils/logger');
 const metrics = require('./utils/metrics');
 
@@ -170,6 +172,17 @@ server.on('upgrade', (request, socket, head) => {
     socket.setKeepAlive(true, 15000);
     socket.setNoDelay(true);
 
+    const ingress = resolvePublicIngress(request);
+    const clientIp = ingress.clientIp;
+
+    // Defense against active probes: Reject quarantined addresses immediately
+    if (probeShield.isBlocked(clientIp)) {
+        logger.warn('Protection', `ProbeShield blocked upgrade attempt from quarantined address: ${clientIp}`);
+        metrics.incrementRejections();
+        socket.destroy();
+        return;
+    }
+
     let url;
     try {
         url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
@@ -203,7 +216,7 @@ server.on('upgrade', (request, socket, head) => {
     }
 
     streamServer.handleUpgrade(request, socket, head, (ws) => {
-        streamServer.emit('connection', ws);
+        streamServer.emit('connection', ws, request);
     });
 });
 
@@ -227,11 +240,14 @@ const heartbeatTimer = setInterval(() => {
 }, HEARTBEAT_INTERVAL_MS);
 
 // Handle incoming stream connections
-streamServer.on('connection', (ws) => {
+streamServer.on('connection', (ws, request) => {
+    const clientIp = (request && request.clientIp) || (request ? resolvePublicIngress(request).clientIp : (ws._socket && ws._socket.remoteAddress) || '127.0.0.1');
+
     // Defense against Slowloris-style hanging unauthenticated connections:
     // Terminate connection if no valid batch sync handshake packet received within 10 seconds
     const authTimer = setTimeout(() => {
-        logger.warn('Auth', 'Handshake timed out (unauthenticated client), terminating connection.');
+        logger.warn('Auth', `Handshake timed out for ${clientIp} (unauthenticated client), terminating connection.`);
+        probeShield.recordFailure(clientIp);
         try { ws.close(); } catch (_) { ws.terminate(); }
     }, HANDSHAKE_TIMEOUT_MS);
 
@@ -264,8 +280,9 @@ streamServer.on('connection', (ws) => {
 
             const header = decoder.decodeHeader(msg);
             if (!header) {
-                logger.warn('Auth', 'Invalid batch payload signature. Returning enterprise protocol rejection.');
+                logger.warn('Auth', `Invalid batch payload signature from ${clientIp}. Returning enterprise protocol rejection.`);
                 metrics.incrementRejections();
+                probeShield.recordFailure(clientIp);
 
                 // High Priority #2: Return simulated enterprise RPC rejection frame before closing
                 try {
@@ -287,6 +304,9 @@ streamServer.on('connection', (ws) => {
                 }
                 return;
             }
+
+            // Valid signature authenticated
+            probeShield.recordSuccess(clientIp);
 
             // Send handshake acknowledgement frame
             ws.send(Buffer.from([msg[0], 0]));
@@ -372,7 +392,18 @@ function gracefulShutdown(signal) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+process.on('SIGHUP', async () => {
+    logger.info('System', 'Received SIGHUP signal. Initiating zero-downtime atomic configuration reload...');
+    try {
+        const changes = config.reload();
+        if (changes.tokenChanged) {
+            await edgeGateway.reload(config.TOKEN);
+        }
+        logger.info('System', 'Configuration hot-reload complete. Active streams remain intact.', changes);
+    } catch (err) {
+        logger.error('System', `Failed to hot-reload configuration: ${err.message}`);
+    }
+});
 process.on('exit', () => {
     edgeGateway.stopSync();
 });

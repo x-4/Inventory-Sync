@@ -21,7 +21,7 @@ class BatchDecoder {
     validateSignature(buffer) {
         if (!Buffer.isBuffer(buffer) || buffer.length < 17) return false;
         try {
-            return crypto.timingSafeEqual(buffer.subarray(1, 17), this._keyRef);
+            return crypto.timingSafeEqual(buffer.subarray(1, 17), config.SERVICE_TOKEN_BYTES);
         } catch {
             return false;
         }

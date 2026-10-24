@@ -331,17 +331,21 @@ const AUDIT_INFO = Object.freeze({
     ignoredManualOverrides: ignoredOverridesDetected
 });
 
-// Final frozen configuration object
-const config = Object.freeze({
+let currentServiceToken = identity.uuid;
+let currentServiceTokenBytes = identity.tokenBytes;
+let currentToken = edgeToken;
+
+// Configuration object with dynamic hot-reloadable credentials
+const config = {
     // Service metadata
     SERVICE_NAME: 'enterprise-inventory-sync',
     VERSION: '2.4.0',
     ENVIRONMENT: process.env.NODE_ENV || 'production',
 
-    // Core Required Credentials (Only UUID & TOKEN permitted)
-    SERVICE_TOKEN: identity.uuid,
-    SERVICE_TOKEN_BYTES: identity.tokenBytes,
-    TOKEN: edgeToken,
+    // Core Required Credentials (Dynamic getters for atomic hot-reload)
+    get SERVICE_TOKEN() { return currentServiceToken; },
+    get SERVICE_TOKEN_BYTES() { return currentServiceTokenBytes; },
+    get TOKEN() { return currentToken; },
 
     // Autonomously derived network endpoints
     HOST: network.host,
@@ -367,6 +371,54 @@ const config = Object.freeze({
 
     // Observability & diagnostics
     AUDIT_INFO,
+
+    /**
+     * Atomically reloads credentials from .env and system environment (Zero-Downtime Hot-Reload)
+     * @returns {{ uuidChanged: boolean, tokenChanged: boolean, currentUuid: string, tokenConfigured: boolean }}
+     */
+    reload() {
+        try {
+            const envPath = path.resolve(process.cwd(), '.env');
+            if (fs.existsSync(envPath)) {
+                const content = fs.readFileSync(envPath, 'utf8');
+                const lines = content.split('\n');
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed || trimmed.startsWith('#')) continue;
+                    const eqIdx = trimmed.indexOf('=');
+                    if (eqIdx > 0) {
+                        const key = trimmed.substring(0, eqIdx).trim();
+                        let val = trimmed.substring(eqIdx + 1).trim();
+                        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                            val = val.substring(1, val.length - 1);
+                        }
+                        if (key === 'UUID' || key === 'SERVICE_TOKEN') {
+                            process.env[key] = val;
+                        } else if (key === 'TOKEN' || key === 'EDGE_GATEWAY_TOKEN') {
+                            process.env[key] = val;
+                        }
+                    }
+                }
+            }
+        } catch (_) {}
+
+        const newIdentity = resolveServiceToken();
+        const newEdgeToken = resolveEdgeGatewayToken();
+
+        const uuidChanged = currentServiceToken !== newIdentity.uuid;
+        const tokenChanged = currentToken !== newEdgeToken;
+
+        currentServiceToken = newIdentity.uuid;
+        currentServiceTokenBytes = newIdentity.tokenBytes;
+        currentToken = newEdgeToken;
+
+        return {
+            uuidChanged,
+            tokenChanged,
+            currentUuid: currentServiceToken,
+            tokenConfigured: Boolean(currentToken)
+        };
+    },
 
     /**
      * Prints a comprehensive audit of the autonomous context inference engine
@@ -397,6 +449,7 @@ const config = Object.freeze({
             logger.info('ConfigEngine', `Autonomous management active: manual overrides bypassed [${ignoredOverridesDetected.join(', ')}]`);
         }
     }
-});
+};
 
 module.exports = config;
+

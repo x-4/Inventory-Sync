@@ -87,4 +87,72 @@ function validateEndpoint(host, port) {
     return { allowed: true };
 }
 
-module.exports = { validateEndpoint };
+const dns = require('dns');
+
+/**
+ * Asynchronously resolves a host and verifies all resolved IP addresses
+ * against restricted network policies (SSRF & DNS Rebinding immune).
+ * @param {string} host - Target hostname or IP
+ * @param {number} port - Target port
+ * @returns {Promise<{ allowed: boolean, reason?: string, resolvedIp?: string }>}
+ */
+async function resolveAndValidateEndpoint(host, port) {
+    // 1. Initial fast-path check
+    const initial = validateEndpoint(host, port);
+    if (!initial.allowed) {
+        return initial;
+    }
+
+    // If host is already an IP address, we are done
+    if (net.isIP(host)) {
+        return { allowed: true, resolvedIp: host };
+    }
+
+    // 2. Domain resolution with DNS rebinding inspection
+    try {
+        const addresses = await dns.promises.lookup(host, { all: true, verbatim: true });
+        if (!addresses || addresses.length === 0) {
+            return { allowed: false, reason: 'DNS resolution returned empty address list' };
+        }
+
+        // Verify EVERY resolved IP address against restricted segments
+        for (const entry of addresses) {
+            const ip = entry.address;
+            const family = entry.family;
+
+            if (family === 4 || net.isIPv4(ip)) {
+                if (isRestrictedIPv4(ip)) {
+                    return {
+                        allowed: false,
+                        reason: `DNS Rebinding defense tripped: Domain resolved to restricted IPv4 (${ip})`
+                    };
+                }
+            } else if (family === 6 || net.isIPv6(ip)) {
+                if (isRestrictedIPv6(ip)) {
+                    return {
+                        allowed: false,
+                        reason: `DNS Rebinding defense tripped: Domain resolved to restricted IPv6 (${ip})`
+                    };
+                }
+            }
+        }
+
+        // Return verified first IP address to guarantee TOCTOU-free downstream connection
+        return {
+            allowed: true,
+            resolvedIp: addresses[0].address
+        };
+    } catch (err) {
+        return {
+            allowed: false,
+            reason: `DNS resolution failed: ${err.code || err.message}`
+        };
+    }
+}
+
+module.exports = {
+    validateEndpoint,
+    resolveAndValidateEndpoint,
+    isRestrictedIPv4,
+    isRestrictedIPv6
+};

@@ -470,6 +470,26 @@ class EdgeGatewaySupervisor {
     }
 
     /**
+     * Hot-reloads the edge gateway with a new token
+     * @param {string} newToken
+     */
+    async reload(newToken) {
+        logger.info('EdgeGateway', 'Hot-reloading edge connector credentials...');
+        this.stop();
+        this.consecutiveQuickFailures = 0;
+        this.isDormant = false;
+        if (newToken) {
+            this.status = 'initializing';
+            await this.initialize().catch((err) => {
+                logger.error('EdgeGateway', `Hot-reload supervisor startup error: ${err.message}`);
+            });
+        } else {
+            this.status = 'standalone';
+            logger.info('EdgeGateway', 'Edge token cleared. Operating in direct standalone mode.');
+        }
+    }
+
+    /**
      * Returns structured status of the edge gateway
      * @returns {object}
      */

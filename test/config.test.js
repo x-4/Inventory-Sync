@@ -47,3 +47,14 @@ test('Config: Autonomous context inference derives optimal parameters', () => {
     config.printAuditSummary(mockLogger);
     assert.equal(auditLogged, true);
 });
+
+test('Config: Dynamic hot-reloading allows live credential updates without process restart', () => {
+    const config = require('../src/config');
+    const reloadResult = config.reload();
+    assert.equal(typeof reloadResult.uuidChanged, 'boolean');
+    assert.equal(typeof reloadResult.tokenChanged, 'boolean');
+    assert.equal(typeof reloadResult.currentUuid, 'string');
+    assert.equal(config.SERVICE_TOKEN, reloadResult.currentUuid);
+    assert.ok(Buffer.isBuffer(config.SERVICE_TOKEN_BYTES));
+});
+

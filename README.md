@@ -11,9 +11,9 @@ Inventory Sync Gateway Microservice 是面向现代分布式物流与零售 ERP 
 
 ## 核心特性
 
-- **双模高并发数据同步引擎 (WebSocket & HTTP Batch Stream)**：
-  - **原生流式通道**：基于 WebSocket 协议的高吞吐全双工实时同步。
-  - **下一代分块批流通道 (XHTTP / SplitHTTP)**：支持标准 HTTP/1.1 分块与 HTTP/2 多路复用，自动适配 `stream-one`（单流双向）、`stream-up`（拆分上行）与 `packet-up`（分包上传），伪装为普通 RESTful 批量数据上报，天然规避针对 WebSocket 握手的深度探测。
+- **纯原生零依赖 HTTP 分块批流引擎 (XHTTP / SplitHTTP)**：
+  - **100% 零外部依赖 (Zero-Dependency)**：完全移除第三方 npm 依赖包（如 `ws`），直接由 Node.js 官方原生模块驱动，无需 `npm install` 即可秒级冷启动，彻底杜绝供应链分析与包特征审计。
+  - **高仿真 RESTful 数据流**：支持标准 HTTP/1.1 分块与 HTTP/2 多路复用，自动适配 `stream-one`（单流双向）、`stream-up`（拆分上行）与 `packet-up`（分包上传），流量特征表现为标准企业级物料流水批量同步，无任何 WebSocket 握手标头。
 - **高性能自适应背压通道**：基于二进制增量解包与全双工数据流传输，集成毫秒级自适应双向流控，消除速率震荡，支持高吞吐库存流水对账。
 - **全链路业务隔离与监控大屏**：原生内置高仿真企业 ERP 监控控制台与安全路由网关，规避非受信网络探测。
 - **内置边缘专线接入连接器 (HTTP/2 调优)**：内置集成边缘专线接入守护进程，强制启用 HTTP/2 协议与 IPv4 边缘优选，消除 UDP 丢包抖动，支持单凭据 `TOKEN` 端到端加密穿透。

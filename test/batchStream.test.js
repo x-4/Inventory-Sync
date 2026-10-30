@@ -218,3 +218,4 @@ test('BatchStream: drain purges all active sessions cleanly', () => {
     drain();
     assert.equal(activeSessions.size, 0);
 });
+

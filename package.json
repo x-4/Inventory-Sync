@@ -10,9 +10,7 @@
         "lint": "node --check src/**/*.js test/**/*.js",
         "build": "node --check src/**/*.js"
     },
-    "dependencies": {
-        "ws": "^8.16.0"
-    },
+    "dependencies": {},
     "engines": {
         "node": ">=20.0.0"
     }

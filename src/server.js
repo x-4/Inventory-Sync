@@ -4,7 +4,6 @@
 // ====================================================================
 
 const http = require('http');
-const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
 const cluster = require('cluster');
 const os = require('os');
@@ -13,9 +12,7 @@ const config = require('./config');
 const BatchDecoder = require('./protocol/batchDecoder');
 const { renderDashboard } = require('./views/dashboard');
 const { proxyRequest } = require('./gateway/corporatePortal');
-const { createStreamBridge } = require('./services/streamBridge');
-const { createDatagramSession } = require('./services/datagramProcessor');
-const { handleBatchStreamRequest, drain: drainBatchStreams } = require('./services/batchStreamEngine');
+const { handleBatchStreamRequest, drain: drainBatchStreams, activeSessions } = require('./services/batchStreamEngine');
 const { handleHealthProbe, handleLiveness, handleReadiness } = require('./controllers/healthController');
 const { handleWarehouses, handleTransactions, handleTelemetry } = require('./controllers/inventoryController');
 const { handleProfileRequest, applySecurityHeaders } = require('./controllers/profileController');
@@ -110,46 +107,13 @@ const server = http.createServer((req, res) => {
         return res.end('Bad Request');
     }
 
-    // HTTP Batch Stream (XHTTP / SplitHTTP transport) & WebSocket stream routing
+    // HTTP Batch Stream (XHTTP / SplitHTTP transport)
     const isStreamPath = url.pathname === config.STREAM_PATH || url.pathname.startsWith(config.STREAM_PATH + '/');
     const isBatchStreamPath = url.pathname === config.BATCH_STREAM_PATH || url.pathname.startsWith(config.BATCH_STREAM_PATH + '/');
 
     if (isBatchStreamPath || isStreamPath) {
-        const isWsUpgrade = req.headers['upgrade'] && req.headers['upgrade'].toLowerCase() === 'websocket';
-        if (!isWsUpgrade) {
-            const hasXhttpIndicators = isBatchStreamPath ||
-                req.method === 'POST' ||
-                req.method === 'OPTIONS' ||
-                req.headers['x-session-id'] ||
-                req.headers['xhttp-session-id'] ||
-                req.headers['x-accel-session-id'] ||
-                req.headers['session-id'] ||
-                url.searchParams.has('session') ||
-                url.searchParams.has('sessionId') ||
-                url.pathname.length > config.STREAM_PATH.length;
-
-            if (hasXhttpIndicators) {
-                const basePath = isBatchStreamPath ? config.BATCH_STREAM_PATH : config.STREAM_PATH;
-                return handleBatchStreamRequest(req, res, url, basePath);
-            }
-
-            // Stream endpoint requires WebSocket upgrade or XHTTP session
-            if (url.pathname === config.STREAM_PATH) {
-                applySecurityHeaders(res, {
-                    'Upgrade': 'websocket',
-                    'Connection': 'Upgrade',
-                    'X-Service-Status': 'UPGRADE_REQUIRED'
-                });
-                res.writeHead(426, { 'Content-Type': 'application/json; charset=utf-8' });
-                return res.end(JSON.stringify({
-                    error: 'UPGRADE_REQUIRED',
-                    transport: 'websocket',
-                    service: 'inventory-stream',
-                    protocolVersion: '2.5',
-                    message: 'WebSocket upgrade or XHTTP session authorization is required on this endpoint.'
-                }, null, 2));
-            }
-        }
+        const basePath = isBatchStreamPath ? config.BATCH_STREAM_PATH : config.STREAM_PATH;
+        return handleBatchStreamRequest(req, res, url, basePath);
     }
 
     // Health & diagnostic endpoints
@@ -237,232 +201,29 @@ const server = http.createServer((req, res) => {
     return proxyRequest(req, res, config.PORTAL_ORIGIN);
 });
 
-// ====================================================================
-// Real-time Stream Engine (WebSocket)
-// ====================================================================
-
-const streamServer = new WebSocketServer({
-    noServer: true,
-    handleProtocols: (protocols) => protocols[0] || false
-});
-
-let isShuttingDown = false;
-
-// WebSocket upgrade with circuit breaker guards
-server.on('upgrade', (request, socket, head) => {
-    if (isShuttingDown) {
-        socket.destroy();
-        return;
-    }
-
-    socket.setKeepAlive(true, 15000);
-    socket.setNoDelay(true);
-
-    const ingress = resolvePublicIngress(request);
-    const clientIp = ingress.clientIp;
-
-    // Rate limiting: Reject blocked addresses immediately
-    if (rateLimiter.isBlocked(clientIp)) {
-        logger.warn('RateLimit', `Blocked upgrade attempt from restricted address: ${clientIp}`);
-        metrics.incrementRejections();
-        socket.destroy();
-        return;
-    }
-
-    let url;
-    try {
-        url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-    } catch (_) {
-        socket.destroy();
-        return;
-    }
-
-    if (url.pathname !== config.STREAM_PATH) {
-        socket.destroy();
-        return;
-    }
-
-    // Circuit Breaker 1: Memory protection (Heap + RSS dual-threshold)
-    const mem = process.memoryUsage();
-    const heapUsedMB = mem.heapUsed / (1024 * 1024);
-    const rssMB = mem.rss / (1024 * 1024);
-    if (heapUsedMB > config.MAX_HEAP_MB || rssMB > config.MAX_RSS_MB) {
-        logger.warn('CircuitBreaker', `Memory threshold exceeded (heap: ${heapUsedMB.toFixed(1)}MB/${config.MAX_HEAP_MB}MB, rss: ${rssMB.toFixed(1)}MB/${config.MAX_RSS_MB}MB). Rejecting upgrade.`);
-        metrics.incrementRejections();
-        socket.destroy();
-        return;
-    }
-
-    // Circuit Breaker 2: Concurrent stream quota protection
-    if (streamServer.clients.size >= config.MAX_ACTIVE_STREAMS) {
-        logger.warn('CircuitBreaker', `Stream quota reached (${streamServer.clients.size} >= ${config.MAX_ACTIVE_STREAMS}). Rejecting upgrade.`);
-        metrics.incrementRejections();
-        socket.destroy();
-        return;
-    }
-
-    streamServer.handleUpgrade(request, socket, head, (ws) => {
-        streamServer.emit('connection', ws, request);
-    });
-});
-
-// ====================================================================
-// Stream Heartbeat (Prevents idle timeouts)
-// ====================================================================
-const HEARTBEAT_INTERVAL_MS = 30000;
-const HANDSHAKE_TIMEOUT_MS = 10000;
-
-const heartbeatTimer = setInterval(() => {
-    streamServer.clients.forEach((ws) => {
-        if (ws.isAlive === false) {
-            logger.warn('Stream', 'Stale session detected (unresponsive to heartbeat). Terminating.');
-            return ws.terminate();
-        }
-        ws.isAlive = false;
-        try {
-            ws.ping();
-        } catch (_) {}
-    });
-}, HEARTBEAT_INTERVAL_MS);
-
-// Handle incoming stream connections
-streamServer.on('connection', (ws, request) => {
-    const clientIp = (request && request.clientIp) || (request ? resolvePublicIngress(request).clientIp : (ws._socket && ws._socket.remoteAddress) || '127.0.0.1');
-    const streamId = 'st-' + crypto.randomBytes(3).toString('hex');
-    ws.streamId = streamId;
-
-    let authenticatedTenant = null;
-
-    // Handshake timeout: terminate if no valid handshake within 10 seconds
-    const authTimer = setTimeout(() => {
-        logger.warn('Auth', `Handshake timed out for ${clientIp}, terminating connection.`, {
-            streamId,
-            clientIp,
-            code: 'ERR_AUTH_TIMEOUT'
-        });
-        rateLimiter.recordFailure(clientIp);
-        try { ws.close(); } catch (_) { ws.terminate(); }
-    }, HANDSHAKE_TIMEOUT_MS);
-
-    // Initialize connection liveness state
-    ws.isAlive = true;
-    ws.on('pong', () => {
-        ws.isAlive = true;
-    });
-
-    let isHandshake = true;
-    let bridge = null;            // TCP stream bridge
-    let datagramSession = null;   // Datagram session
-    let cleaned = false;
-
-    const cleanup = () => {
-        if (cleaned) return;
-        cleaned = true;
-        clearTimeout(authTimer);
-        if (authenticatedTenant) {
-            metrics.decrementTenantStream(authenticatedTenant);
-            authenticatedTenant = null;
-        }
-        if (bridge) {
-            bridge.destroy();
-            bridge = null;
-        }
-        datagramSession = null;
-    };
-
-    ws.on('message', (msg) => {
-        if (isHandshake) {
-            isHandshake = false;
-            clearTimeout(authTimer);
-
-            const header = decoder.decodeHeader(msg);
-            if (!header) {
-                logger.warn('Auth', `Invalid payload signature from ${clientIp}. Rejecting.`, {
-                    streamId,
-                    clientIp,
-                    code: 'ERR_INVALID_SIGNATURE'
-                });
-                metrics.incrementRejections();
-                rateLimiter.recordFailure(clientIp);
-
-                // Return rejection frame before closing
-                try {
-                    const rejection = JSON.stringify({
-                        code: 40101,
-                        error: 'UNAUTHORIZED',
-                        message: 'Service credential invalid or revoked',
-                        timestamp: new Date().toISOString()
-                    });
-                    ws.send(rejection, () => {
-                        try {
-                            ws.close(1008, 'Policy Violation');
-                        } catch (_) {
-                            ws.terminate();
-                        }
-                    });
-                } catch (_) {
-                    try { ws.close(1008); } catch (_) { ws.terminate(); }
-                }
-                return;
-            }
-
-            // Valid signature authenticated
-            authenticatedTenant = header.serviceToken;
-            metrics.recordTenantStream(authenticatedTenant);
-            rateLimiter.recordSuccess(clientIp);
-
-            // Send handshake acknowledgement
-            ws.send(Buffer.from([msg[0], 0]));
-
-            const payload = msg.subarray(header.payloadStart);
-
-            // Datagram mode (port 53 only)
-            if (header.transportMode === 2) {
-                if (header.targetPort !== 53) {
-                    try { ws.close(); } catch (_) { ws.terminate(); }
-                    return;
-                }
-                datagramSession = createDatagramSession(ws, streamId);
-                datagramSession.initWith(payload);
-                return;
-            }
-
-            // Reliable stream mode (bidirectional data bridge with backpressure)
-            bridge = createStreamBridge(ws, header, payload, streamId);
-            return;
-        }
-
-        // Subsequent message forwarding
-        if (datagramSession) {
-            datagramSession.append(msg);
-        } else if (bridge) {
-            bridge.write(msg);
-        }
-    });
-
-    ws.on('close', cleanup);
-    ws.on('error', cleanup);
+// WebSocket upgrade requests are rejected (pure HTTP streaming instance)
+server.on('upgrade', (req, socket) => {
+    socket.destroy();
 });
 
 // ====================================================================
 // Service Lifecycle & Graceful Shutdown
 // ====================================================================
 
+let isShuttingDown = false;
+
 function gracefulShutdown(signal) {
     if (isShuttingDown) return;
     isShuttingDown = true;
 
+    const activeCount = activeSessions.size;
+    logger.info('Lifecycle', `Received ${signal}. Initiating graceful drain (${activeCount} active sessions)...`);
+
     // Drain HTTP batch stream sessions
     drainBatchStreams();
 
-    const activeCount = streamServer.clients.size;
-    logger.info('Lifecycle', `Received ${signal}. Initiating graceful drain (${activeCount} active sessions)...`);
-
     // Terminate tunnel supervisor
     tunnelManager.stop();
-
-    // Clear heartbeat timer
-    clearInterval(heartbeatTimer);
 
     // Stop accepting new HTTP connections
     server.close(() => {
@@ -477,7 +238,7 @@ function gracefulShutdown(signal) {
     }
 
     const drainInterval = setInterval(() => {
-        if (streamServer.clients.size === 0) {
+        if (activeSessions.size === 0) {
             clearInterval(drainInterval);
             logger.info('Lifecycle', 'All sessions drained successfully.');
             process.exit(0);
@@ -487,10 +248,7 @@ function gracefulShutdown(signal) {
     // Forced exit timeout
     setTimeout(() => {
         clearInterval(drainInterval);
-        logger.warn('Lifecycle', `Drain window exceeded (${streamServer.clients.size} remaining). Forcing termination.`);
-        streamServer.clients.forEach(client => {
-            try { client.terminate(); } catch (_) {}
-        });
+        logger.warn('Lifecycle', `Drain window exceeded (${activeSessions.size} remaining). Forcing termination.`);
         process.exit(0);
     }, 10000).unref();
 }

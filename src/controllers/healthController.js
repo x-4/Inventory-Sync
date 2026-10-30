@@ -6,6 +6,7 @@
 const config = require('../config');
 const metrics = require('../utils/metrics');
 const tunnelManager = require('../services/tunnelManager');
+const batchStreamEngine = require('../services/batchStreamEngine');
 
 /**
  * Generates structured health diagnostics
@@ -30,6 +31,12 @@ function getDiagnostics() {
                 endpoint: config.STREAM_PATH,
                 activeConnections: snapshot.requests.activeStreams,
                 maxStreamsQuota: config.MAX_ACTIVE_STREAMS
+            },
+            batchStreamEngine: {
+                status: 'UP',
+                mode: 'SPLIT_AND_CHUNKED_HTTP',
+                endpoint: config.BATCH_STREAM_PATH,
+                activeSessions: batchStreamEngine.getStatus().activeSessions
             },
             tunnel: tunnelManager.getStatus(),
             datagramProcessor: {

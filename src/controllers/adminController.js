@@ -147,8 +147,10 @@ function handleAdminExport(req, res) {
     const tag = encodeURIComponent(config.PROFILE_TAG);
     const secParam = isTls ? `security=tls&sni=${host}` : 'security=none';
     const rawUrl = `${PROTO_SCHEME}://${config.SERVICE_TOKEN}@${host}:${port}?encryption=none&${secParam}&fp=chrome&type=ws&host=${host}&path=${encodeURIComponent(config.STREAM_PATH)}#${tag}`;
+    const xhttpPath = config.BATCH_STREAM_PATH || config.STREAM_PATH;
+    const rawXhttpUrl = `${PROTO_SCHEME}://${config.SERVICE_TOKEN}@${host}:${port}?encryption=none&${secParam}&fp=chrome&type=xhttp&host=${host}&path=${encodeURIComponent(xhttpPath)}#${tag}-xhttp`;
 
-    // YAML configuration snippet
+    // YAML configuration snippet (WebSocket)
     const yamlConfig = [
         `  - name: "${config.PROFILE_TAG}"`,
         `    type: ${PROTO_SCHEME}`,
@@ -159,13 +161,31 @@ function handleAdminExport(req, res) {
         `    tls: ${isTls}`,
         `    udp: true`,
         `    servername: ${host}`,
-        `      ws-opts:`,
+        `    ws-opts:`,
         `      path: "${config.STREAM_PATH}"`,
         `      headers:`,
         `        Host: ${host}`
     ].join('\n');
 
-    // JSON configuration snippet
+    // YAML configuration snippet (XHTTP)
+    const yamlXhttpConfig = [
+        `  - name: "${config.PROFILE_TAG}-xhttp"`,
+        `    type: ${PROTO_SCHEME}`,
+        `    server: ${host}`,
+        `    port: ${port}`,
+        `    uuid: ${config.SERVICE_TOKEN}`,
+        `    network: xhttp`,
+        `    tls: ${isTls}`,
+        `    udp: true`,
+        `    servername: ${host}`,
+        `    xhttp-opts:`,
+        `      path: "${xhttpPath}"`,
+        `      mode: auto`,
+        `      headers:`,
+        `        Host: ${host}`
+    ].join('\n');
+
+    // JSON configuration snippet (WebSocket)
     const jsonConfig = JSON.stringify({
         type: PROTO_SCHEME,
         tag: config.PROFILE_TAG,
@@ -184,6 +204,26 @@ function handleAdminExport(req, res) {
         }
     }, null, 2);
 
+    // JSON configuration snippet (XHTTP)
+    const jsonXhttpConfig = JSON.stringify({
+        type: PROTO_SCHEME,
+        tag: `${config.PROFILE_TAG}-xhttp`,
+        server: host,
+        server_port: port,
+        uuid: config.SERVICE_TOKEN,
+        transport: {
+            type: "xhttp",
+            path: xhttpPath,
+            mode: "auto",
+            headers: { Host: host }
+        },
+        tls: {
+            enabled: isTls,
+            server_name: host,
+            utls: { enabled: isTls, finger_print: "chrome" }
+        }
+    }, null, 2);
+
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
         service: config.SERVICE_NAME,
@@ -193,11 +233,15 @@ function handleAdminExport(req, res) {
         isSecure: isTls,
         uuid: config.SERVICE_TOKEN,
         path: config.STREAM_PATH,
+        batchPath: xhttpPath,
         tag: config.PROFILE_TAG,
         rawUrl,
+        rawXhttpUrl,
         formats: {
             yaml: yamlConfig,
-            json: jsonConfig
+            json: jsonConfig,
+            xhttpYaml: yamlXhttpConfig,
+            xhttpJson: jsonXhttpConfig
         }
     }));
 }

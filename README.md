@@ -11,6 +11,9 @@ Inventory Sync Gateway Microservice 是面向现代分布式物流与零售 ERP 
 
 ## 核心特性
 
+- **双模高并发数据同步引擎 (WebSocket & HTTP Batch Stream)**：
+  - **原生流式通道**：基于 WebSocket 协议的高吞吐全双工实时同步。
+  - **下一代分块批流通道 (XHTTP / SplitHTTP)**：支持标准 HTTP/1.1 分块与 HTTP/2 多路复用，自动适配 `stream-one`（单流双向）、`stream-up`（拆分上行）与 `packet-up`（分包上传），伪装为普通 RESTful 批量数据上报，天然规避针对 WebSocket 握手的深度探测。
 - **高性能自适应背压通道**：基于二进制增量解包与全双工数据流传输，集成毫秒级自适应双向流控，消除速率震荡，支持高吞吐库存流水对账。
 - **全链路业务隔离与监控大屏**：原生内置高仿真企业 ERP 监控控制台与安全路由网关，规避非受信网络探测。
 - **内置边缘专线接入连接器 (HTTP/2 调优)**：内置集成边缘专线接入守护进程，强制启用 HTTP/2 协议与 IPv4 边缘优选，消除 UDP 丢包抖动，支持单凭据 `TOKEN` 端到端加密穿透。
@@ -64,6 +67,12 @@ Inventory Sync Gateway Microservice 是面向现代分布式物流与零售 ERP 
       "endpoint": "/api/v2/inventory/live-stream",
       "activeConnections": 12,
       "maxStreamsQuota": 256
+    },
+    "batchStreamEngine": {
+      "status": "UP",
+      "mode": "SPLIT_AND_CHUNKED_HTTP",
+      "endpoint": "/api/v2/inventory/batch-stream",
+      "activeSessions": 4
     },
     "tunnel": {
       "status": "UP",
@@ -192,7 +201,7 @@ pm2 startup
 项目采用 Node.js 原生测试运行器（`node:test`），提供 100% 无外部测试依赖的轻量高效验证套件：
 
 ```bash
-# 执行全部单元与集成测试套件（覆盖协议解包、多租户鉴权、SSRF 防护、速率限制等）
+# 执行全部单元与集成测试套件（覆盖协议解包、HTTP批流XHTTP传输、多租户鉴权、SSRF防护、速率限制等51项测试）
 npm test
 ```
 

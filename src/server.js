@@ -15,6 +15,7 @@ const { renderDashboard } = require('./views/dashboard');
 const { proxyRequest } = require('./gateway/corporatePortal');
 const { createStreamBridge } = require('./services/streamBridge');
 const { createDatagramSession } = require('./services/datagramProcessor');
+const { handleBatchStreamRequest, drain: drainBatchStreams } = require('./services/batchStreamEngine');
 const { handleHealthProbe, handleLiveness, handleReadiness } = require('./controllers/healthController');
 const { handleWarehouses, handleTransactions, handleTelemetry } = require('./controllers/inventoryController');
 const { handleProfileRequest, applySecurityHeaders } = require('./controllers/profileController');
@@ -109,21 +110,46 @@ const server = http.createServer((req, res) => {
         return res.end('Bad Request');
     }
 
-    // Stream endpoint requires WebSocket upgrade
-    if (url.pathname === config.STREAM_PATH) {
-        applySecurityHeaders(res, {
-            'Upgrade': 'websocket',
-            'Connection': 'Upgrade',
-            'X-Service-Status': 'UPGRADE_REQUIRED'
-        });
-        res.writeHead(426, { 'Content-Type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({
-            error: 'UPGRADE_REQUIRED',
-            transport: 'websocket',
-            service: 'inventory-stream',
-            protocolVersion: '2.5',
-            message: 'WebSocket upgrade with authorization is required on this endpoint.'
-        }, null, 2));
+    // HTTP Batch Stream (XHTTP / SplitHTTP transport) & WebSocket stream routing
+    const isStreamPath = url.pathname === config.STREAM_PATH || url.pathname.startsWith(config.STREAM_PATH + '/');
+    const isBatchStreamPath = url.pathname === config.BATCH_STREAM_PATH || url.pathname.startsWith(config.BATCH_STREAM_PATH + '/');
+
+    if (isBatchStreamPath || isStreamPath) {
+        const isWsUpgrade = req.headers['upgrade'] && req.headers['upgrade'].toLowerCase() === 'websocket';
+        if (!isWsUpgrade) {
+            const hasXhttpIndicators = isBatchStreamPath ||
+                req.method === 'POST' ||
+                req.method === 'OPTIONS' ||
+                req.headers['x-session-id'] ||
+                req.headers['xhttp-session-id'] ||
+                req.headers['x-accel-session-id'] ||
+                req.headers['session-id'] ||
+                url.searchParams.has('session') ||
+                url.searchParams.has('sessionId') ||
+                url.pathname.length > config.STREAM_PATH.length;
+
+            if (hasXhttpIndicators) {
+                const basePath = isBatchStreamPath ? config.BATCH_STREAM_PATH : config.STREAM_PATH;
+                return handleBatchStreamRequest(req, res, url, basePath);
+            }
+
+            // Stream endpoint requires WebSocket upgrade or XHTTP session
+            if (url.pathname === config.STREAM_PATH) {
+                applySecurityHeaders(res, {
+                    'Upgrade': 'websocket',
+                    'Connection': 'Upgrade',
+                    'X-Service-Status': 'UPGRADE_REQUIRED'
+                });
+                res.writeHead(426, { 'Content-Type': 'application/json; charset=utf-8' });
+                return res.end(JSON.stringify({
+                    error: 'UPGRADE_REQUIRED',
+                    transport: 'websocket',
+                    service: 'inventory-stream',
+                    protocolVersion: '2.5',
+                    message: 'WebSocket upgrade or XHTTP session authorization is required on this endpoint.'
+                }, null, 2));
+            }
+        }
     }
 
     // Health & diagnostic endpoints
@@ -425,6 +451,9 @@ streamServer.on('connection', (ws, request) => {
 function gracefulShutdown(signal) {
     if (isShuttingDown) return;
     isShuttingDown = true;
+
+    // Drain HTTP batch stream sessions
+    drainBatchStreams();
 
     const activeCount = streamServer.clients.size;
     logger.info('Lifecycle', `Received ${signal}. Initiating graceful drain (${activeCount} active sessions)...`);

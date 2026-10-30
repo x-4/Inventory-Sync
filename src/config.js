@@ -286,9 +286,10 @@ function resolveTunnelToken() {
  */
 function deriveEndpointProfile(context) {
     const streamPath = '/api/v2/inventory/live-stream';
+    const batchStreamPath = '/api/v2/inventory/batch-stream';
     const hostSlug = (context.hostname || 'node').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
     const profileTag = `Sync-${context.platformType}-${hostSlug}`;
-    return { streamPath, profileTag };
+    return { streamPath, batchStreamPath, profileTag };
 }
 
 // --------------------------------------------------------------------
@@ -351,6 +352,7 @@ const config = {
 
     // Derived paths & identity
     STREAM_PATH: endpointProfile.streamPath,
+    BATCH_STREAM_PATH: endpointProfile.batchStreamPath,
     PROFILE_TAG: endpointProfile.profileTag,
     PORTAL_ORIGIN: '',
 

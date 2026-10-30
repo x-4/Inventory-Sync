@@ -31,7 +31,16 @@ class HttpStreamChannel extends EventEmitter {
         super();
         this.sessionId = sessionId;
         this.downlinkRes = null;
-        this._socket = null;
+
+        // Mock socket for downstream backpressure / bridge compatibility
+        this._socket = new EventEmitter();
+        this._socket.destroyed = false;
+        this._socket.pause = () => {};
+        this._socket.resume = () => {};
+        this._socket.destroy = () => {
+            this._socket.destroyed = true;
+            this._socket.emit('close');
+        };
 
         // Channel state constants (mirroring WebSocket readyState for compatibility)
         this.CONNECTING = 0;
@@ -45,6 +54,7 @@ class HttpStreamChannel extends EventEmitter {
         this.boundDrainHandler = () => {
             this.bufferedAmount = 0;
             this.emit('drain');
+            this._socket.emit('drain');
         };
     }
 
@@ -61,10 +71,14 @@ class HttpStreamChannel extends EventEmitter {
         }
 
         this.downlinkRes = res;
-        this._socket = res.socket || (res.socket && res.socket._handle) || null;
+        const rawSocket = res.socket || (res.socket && res.socket._handle) || null;
 
-        if (res.socket) {
-            res.socket.on('drain', this.boundDrainHandler);
+        if (rawSocket) {
+            try {
+                rawSocket.setKeepAlive(true, 15000);
+                rawSocket.setNoDelay(true);
+            } catch (_) {}
+            rawSocket.on('drain', this.boundDrainHandler);
         }
 
         res.on('close', () => {
@@ -103,6 +117,9 @@ class HttpStreamChannel extends EventEmitter {
 
         try {
             const canAcceptMore = this.downlinkRes.write(chunk, (err) => {
+                if (err) {
+                    this.emit('error', err);
+                }
                 if (callback) callback(err);
             });
 
@@ -110,6 +127,7 @@ class HttpStreamChannel extends EventEmitter {
                 this.bufferedAmount += chunk.length;
             }
         } catch (err) {
+            this.emit('error', err);
             if (callback) callback(err);
         }
     }
@@ -127,6 +145,9 @@ class HttpStreamChannel extends EventEmitter {
         if (this.downlinkRes && this.downlinkRes.socket) {
             this.downlinkRes.socket.removeListener('drain', this.boundDrainHandler);
         }
+
+        this._socket.destroyed = true;
+        this._socket.emit('close');
 
         this.pendingDownlinkChunks = [];
         this.emit('close');
@@ -361,6 +382,13 @@ function processUplinkChunk(session, chunk, req) {
  * @returns {boolean} True if request was handled by batchStreamEngine
  */
 function handleBatchStreamRequest(req, res, url, basePath = config.STREAM_PATH) {
+    if (req.socket) {
+        try {
+            req.socket.setKeepAlive(true, 15000);
+            req.socket.setNoDelay(true);
+        } catch (_) {}
+    }
+
     const ingress = resolvePublicIngress(req);
     const clientIp = ingress.clientIp;
 
@@ -368,8 +396,13 @@ function handleBatchStreamRequest(req, res, url, basePath = config.STREAM_PATH) 
     if (rateLimiter.isBlocked(clientIp)) {
         logger.warn('RateLimit', `Blocked XHTTP request from restricted address: ${clientIp}`);
         metrics.incrementRejections();
-        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'FORBIDDEN', message: 'Address temporarily blocked' }));
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Server': 'Sync-Gateway/2.5' });
+        res.end(JSON.stringify({
+            code: 40301,
+            error: 'FORBIDDEN',
+            message: 'Access denied: source address restricted by enterprise gateway policy',
+            timestamp: new Date().toISOString()
+        }));
         return true;
     }
 
@@ -390,11 +423,33 @@ function handleBatchStreamRequest(req, res, url, basePath = config.STREAM_PATH) 
     let sessionId = extractSessionId(req, url, basePath);
 
     // Circuit Breaker: Quota check for new sessions
-    if (!sessionId && activeSessions.size >= config.MAX_ACTIVE_STREAMS) {
+    const isExisting = Boolean(sessionId && activeSessions.has(sessionId));
+    if (!isExisting && activeSessions.size >= config.MAX_ACTIVE_STREAMS) {
         logger.warn('CircuitBreaker', `Stream quota reached (${activeSessions.size} >= ${config.MAX_ACTIVE_STREAMS}). Rejecting XHTTP.`);
         metrics.incrementRejections();
-        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'SERVICE_UNAVAILABLE', message: 'Maximum concurrent stream quota reached' }));
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Server': 'Sync-Gateway/2.5' });
+        res.end(JSON.stringify({
+            code: 50301,
+            error: 'SERVICE_UNAVAILABLE',
+            message: 'Stream capacity quota saturated. Please retry batch transaction shortly.',
+            timestamp: new Date().toISOString()
+        }));
+        return true;
+    }
+
+    // Memory Circuit Breaker: Heap usage guard against high-load OOM
+    const memUsage = process.memoryUsage();
+    const maxHeapBytes = (config.MAX_HEAP_MB || 512) * 1024 * 1024;
+    if (memUsage.heapUsed > maxHeapBytes) {
+        logger.warn('CircuitBreaker', `Heap limit exceeded (${(memUsage.heapUsed / 1024 / 1024).toFixed(1)}MB > ${config.MAX_HEAP_MB}MB). Throttling stream.`);
+        metrics.incrementRejections();
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Server': 'Sync-Gateway/2.5' });
+        res.end(JSON.stringify({
+            code: 50302,
+            error: 'SERVICE_UNAVAILABLE',
+            message: 'Gateway resource threshold reached. Throttling incoming transactions.',
+            timestamp: new Date().toISOString()
+        }));
         return true;
     }
 
@@ -404,8 +459,13 @@ function handleBatchStreamRequest(req, res, url, basePath = config.STREAM_PATH) 
     if (req.method === 'GET') {
         if (!sessionId) {
             // Missing session identifier on GET
-            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ error: 'BAD_REQUEST', message: 'Missing session identifier' }));
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Server': 'Sync-Gateway/2.5' });
+            res.end(JSON.stringify({
+                code: 40001,
+                error: 'BAD_REQUEST',
+                message: 'Transaction session identifier required for batch synchronization stream',
+                timestamp: new Date().toISOString()
+            }));
             return true;
         }
 

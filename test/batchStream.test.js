@@ -219,3 +219,38 @@ test('BatchStream: drain purges all active sessions cleanly', () => {
     assert.equal(activeSessions.size, 0);
 });
 
+test('BatchStream: HttpStreamChannel socket compatibility for flow control', () => {
+    const channel = new HttpStreamChannel('compat-test-session');
+    assert.ok(channel._socket);
+    assert.equal(channel._socket.destroyed, false);
+    assert.equal(typeof channel._socket.pause, 'function');
+    assert.equal(typeof channel._socket.resume, 'function');
+
+    let drainEmitted = false;
+    channel._socket.on('drain', () => { drainEmitted = true; });
+    channel.boundDrainHandler();
+    assert.equal(drainEmitted, true);
+
+    channel.close();
+    assert.equal(channel.readyState, channel.CLOSED);
+    assert.equal(channel._socket.destroyed, true);
+});
+
+test('BatchStream: GET without session returns 400 with enterprise error format', () => {
+    const req = { method: 'GET', headers: { host: 'localhost' } };
+    let statusCode = null;
+    let body = '';
+    const res = {
+        writeHead: (code) => { statusCode = code; },
+        end: (payload) => { body = payload; }
+    };
+    const url = new URL('http://localhost/api/v2/inventory/batch-stream');
+    handleBatchStreamRequest(req, res, url, '/api/v2/inventory/batch-stream');
+
+    assert.equal(statusCode, 400);
+    const parsed = JSON.parse(body);
+    assert.equal(parsed.code, 40001);
+    assert.equal(parsed.error, 'BAD_REQUEST');
+});
+
+

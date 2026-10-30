@@ -58,7 +58,7 @@ function handleProfileRequest(req, res) {
         terminalId: `DEVICE-${deviceFingerprint}`,
         channel: {
             mode: 'SECURE_STREAM_V2',
-            transport: 'WebSocket+TLS',
+            transport: 'HTTP/2-Chunked+TLS',
             gatewayHost: host,
             streamPath: config.STREAM_PATH,
             heartbeatIntervalMs: 30000,

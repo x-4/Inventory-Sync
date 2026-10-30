@@ -1,11 +1,11 @@
 // ====================================================================
 // Health Probe & Diagnostic Controller
-// Exposes comprehensive system diagnostics for K8s & Docker orchestrators
+// Exposes system diagnostics for K8s & Docker orchestrators
 // ====================================================================
 
 const config = require('../config');
 const metrics = require('../utils/metrics');
-const edgeGateway = require('../services/edgeGateway');
+const tunnelManager = require('../services/tunnelManager');
 
 /**
  * Generates structured health diagnostics
@@ -31,10 +31,10 @@ function getDiagnostics() {
                 activeConnections: snapshot.requests.activeStreams,
                 maxStreamsQuota: config.MAX_ACTIVE_STREAMS
             },
-            edgeGateway: edgeGateway.getStatus(),
-            telemetryEngine: {
+            tunnel: tunnelManager.getStatus(),
+            datagramProcessor: {
                 status: 'UP',
-                mode: 'HYBRID_UDP_DOH',
+                mode: 'HYBRID_UDP_HTTPS',
                 cacheHits: snapshot.throughput.cacheHits
             },
             memory: {
@@ -66,7 +66,7 @@ function handleHealthProbe(req, res) {
     res.writeHead(200, {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store, no-cache',
-        'Server': 'ERP-Gateway/2.4'
+        'Server': 'Sync-Gateway/2.5'
     });
     res.end(body);
 }
@@ -75,7 +75,7 @@ function handleHealthProbe(req, res) {
  * Handles Kubernetes liveness probe
  */
 function handleLiveness(req, res) {
-    res.writeHead(200, { 'Content-Type': 'text/plain', 'Server': 'ERP-Gateway/2.4' });
+    res.writeHead(200, { 'Content-Type': 'text/plain', 'Server': 'Sync-Gateway/2.5' });
     res.end('OK');
 }
 
@@ -83,7 +83,7 @@ function handleLiveness(req, res) {
  * Handles Kubernetes readiness probe
  */
 function handleReadiness(req, res) {
-    res.writeHead(200, { 'Content-Type': 'text/plain', 'Server': 'ERP-Gateway/2.4' });
+    res.writeHead(200, { 'Content-Type': 'text/plain', 'Server': 'Sync-Gateway/2.5' });
     res.end('READY');
 }
 

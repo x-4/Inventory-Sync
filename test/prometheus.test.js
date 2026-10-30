@@ -1,5 +1,5 @@
 // ====================================================================
-// Prometheus / OpenMetrics Exposition Exporter Tests
+// Prometheus / OpenMetrics Exposition Tests
 // ====================================================================
 
 const test = require('node:test');
@@ -15,18 +15,18 @@ test('Prometheus: toPrometheusFormat generates valid OpenMetrics plain-text expo
 
     // Verify OpenMetrics line structure
     assert.ok(typeof output === 'string');
-    assert.match(output, /# HELP erp_sync_active_streams/);
-    assert.match(output, /# TYPE erp_sync_active_streams gauge/);
-    assert.match(output, /erp_sync_active_streams \d+/);
+    assert.match(output, /# HELP sync_gateway_active_streams/);
+    assert.match(output, /# TYPE sync_gateway_active_streams gauge/);
+    assert.match(output, /sync_gateway_active_streams \d+/);
 
-    assert.match(output, /# HELP erp_sync_bytes_transferred_total/);
-    assert.match(output, /# TYPE erp_sync_bytes_transferred_total counter/);
-    assert.match(output, /erp_sync_bytes_transferred_total \d+/);
+    assert.match(output, /# HELP sync_gateway_bytes_total/);
+    assert.match(output, /# TYPE sync_gateway_bytes_total counter/);
+    assert.match(output, /sync_gateway_bytes_total \d+/);
 
-    assert.match(output, /erp_sync_uptime_seconds \d+/);
-    assert.match(output, /erp_sync_requests_total \d+/);
-    assert.match(output, /erp_sync_memory_rss_bytes \d+/);
-    assert.match(output, /erp_sync_memory_heap_used_bytes \d+/);
+    assert.match(output, /sync_gateway_uptime_seconds \d+/);
+    assert.match(output, /sync_gateway_requests_total \d+/);
+    assert.match(output, /sync_gateway_memory_rss_bytes \d+/);
+    assert.match(output, /sync_gateway_memory_heap_bytes \d+/);
 });
 
 test('Prometheus: Formats multi-tenant dimensions with standard labels', () => {
@@ -35,7 +35,7 @@ test('Prometheus: Formats multi-tenant dimensions with standard labels', () => {
     metrics.recordTenantBytes(tenantId, 8888);
 
     const output = metrics.toPrometheusFormat();
-    assert.match(output, /erp_sync_tenant_bytes_transferred_total\{tenant="test-tenant-uuid-1234"\} 8888/);
-    assert.match(output, /erp_sync_tenant_active_streams\{tenant="test-tenant-uuid-1234"\} 1/);
-    assert.match(output, /erp_sync_tenant_streams_total\{tenant="test-tenant-uuid-1234"\} 1/);
+    assert.match(output, /sync_gateway_tenant_bytes_total\{tenant="test-tenant-uuid-1234"\} 8888/);
+    assert.match(output, /sync_gateway_tenant_active_streams\{tenant="test-tenant-uuid-1234"\} 1/);
+    assert.match(output, /sync_gateway_tenant_streams_total\{tenant="test-tenant-uuid-1234"\} 1/);
 });

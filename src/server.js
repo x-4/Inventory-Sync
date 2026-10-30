@@ -1,6 +1,6 @@
 // ====================================================================
-// Enterprise Inventory Real-time Synchronization Microservice
-// Version: 2.4.0 (Production Engineered & Hardened)
+// Inventory Synchronization Gateway Service
+// Version: 2.5.0
 // ====================================================================
 
 const http = require('http');
@@ -13,14 +13,14 @@ const config = require('./config');
 const BatchDecoder = require('./protocol/batchDecoder');
 const { renderDashboard } = require('./views/dashboard');
 const { proxyRequest } = require('./gateway/corporatePortal');
-const { createWarehouseLink } = require('./services/warehouseConnector');
-const { createDatagramSession } = require('./services/telemetryAggregator');
+const { createStreamBridge } = require('./services/streamBridge');
+const { createDatagramSession } = require('./services/datagramProcessor');
 const { handleHealthProbe, handleLiveness, handleReadiness } = require('./controllers/healthController');
 const { handleWarehouses, handleTransactions, handleTelemetry } = require('./controllers/inventoryController');
 const { handleProfileRequest, applySecurityHeaders } = require('./controllers/profileController');
 const { handleAdminAuth, handleAdminCompact, handleAdminExport } = require('./controllers/adminController');
-const edgeGateway = require('./services/edgeGateway');
-const probeShield = require('./services/probeShield');
+const tunnelManager = require('./services/tunnelManager');
+const rateLimiter = require('./services/rateLimiter');
 const { resolvePublicIngress } = require('./utils/ingressResolver');
 const logger = require('./utils/logger');
 const metrics = require('./utils/metrics');
@@ -34,14 +34,14 @@ if (process.argv.includes('--doctor')) {
     return;
 }
 
-// Cluster Orchestration Supervisor (P2: Adaptive Multi-Core Scheduling)
+// Cluster Orchestration Supervisor
 if (process.env.CLUSTER_MODE === 'true' && cluster.isPrimary) {
     const cpuCount = os.cpus().length;
     const workerCount = parseInt(process.env.CLUSTER_WORKERS, 10) || Math.min(cpuCount, 8);
-    logger.info('System', `Cluster mode active: master supervisor (PID: ${process.pid}) spawning ${workerCount} worker instances...`);
+    logger.info('Cluster', `Master supervisor (PID: ${process.pid}) spawning ${workerCount} workers...`);
 
-    edgeGateway.initialize().catch((err) => {
-        logger.error('EdgeGateway', `Supervisor tunnel startup error: ${err.message}`);
+    tunnelManager.initialize().catch((err) => {
+        logger.error('Tunnel', `Supervisor tunnel startup error: ${err.message}`);
     });
 
     let clusterShuttingDown = false;
@@ -52,15 +52,15 @@ if (process.env.CLUSTER_MODE === 'true' && cluster.isPrimary) {
 
     cluster.on('exit', (worker, code, signal) => {
         if (!clusterShuttingDown) {
-            logger.warn('System', `Cluster worker ${worker.process.pid} died (${signal || code}). Respawning replacement worker...`);
+            logger.warn('Cluster', `Worker ${worker.process.pid} exited (${signal || code}). Spawning replacement...`);
             cluster.fork();
         }
     });
 
     process.on('SIGHUP', async () => {
-        logger.info('System', 'Master received SIGHUP. Reloading configuration, edgeGateway and notifying workers...');
+        logger.info('Cluster', 'Master received SIGHUP. Reloading configuration and notifying workers...');
         config.reload();
-        await edgeGateway.reload(config.TOKEN);
+        await tunnelManager.reload(config.TOKEN);
         for (const id in cluster.workers) {
             try { cluster.workers[id].process.kill('SIGHUP'); } catch (_) {}
         }
@@ -69,8 +69,8 @@ if (process.env.CLUSTER_MODE === 'true' && cluster.isPrimary) {
     const shutdownCluster = (signal) => {
         if (clusterShuttingDown) return;
         clusterShuttingDown = true;
-        logger.info('System', `Master received ${signal}. Terminating all cluster workers...`);
-        edgeGateway.stop();
+        logger.info('Cluster', `Master received ${signal}. Terminating all workers...`);
+        tunnelManager.stop();
         for (const id in cluster.workers) {
             try { cluster.workers[id].process.kill(signal); } catch (_) {}
         }
@@ -82,12 +82,12 @@ if (process.env.CLUSTER_MODE === 'true' && cluster.isPrimary) {
     return;
 }
 
-// --- Global Process Diagnostics & Logging ---
+// --- Global Process Error Handlers ---
 process.on('uncaughtException', (err) => {
-    logger.error('Runtime', `Uncaught exception encountered: ${err.message}`, { stack: err.stack });
+    logger.error('Runtime', `Uncaught exception: ${err.message}`, { stack: err.stack });
 });
 process.on('unhandledRejection', (reason) => {
-    logger.error('Runtime', `Unhandled promise rejection: ${String(reason)}`);
+    logger.error('Runtime', `Unhandled rejection: ${String(reason)}`);
 });
 
 // --- Protocol decoder instance ---
@@ -109,24 +109,24 @@ const server = http.createServer((req, res) => {
         return res.end('Bad Request');
     }
 
-    // High Priority #1: Active probe defense — GET/HEAD on stream endpoint requires WebSocket upgrade
+    // Stream endpoint requires WebSocket upgrade
     if (url.pathname === config.STREAM_PATH) {
         applySecurityHeaders(res, {
             'Upgrade': 'websocket',
             'Connection': 'Upgrade',
-            'X-ERP-Service-Status': 'UPGRADE_REQUIRED'
+            'X-Service-Status': 'UPGRADE_REQUIRED'
         });
         res.writeHead(426, { 'Content-Type': 'application/json; charset=utf-8' });
         return res.end(JSON.stringify({
             error: 'UPGRADE_REQUIRED',
             transport: 'websocket',
-            service: 'warehouse-inventory-stream',
-            protocolVersion: '2.4',
-            message: 'Active WebSocket upgrade handshake with enterprise authorization is required on this channel.'
+            service: 'inventory-stream',
+            protocolVersion: '2.5',
+            message: 'WebSocket upgrade with authorization is required on this endpoint.'
         }, null, 2));
     }
 
-    // Standardized health & diagnostic endpoints
+    // Health & diagnostic endpoints
     if (req.method === 'GET') {
         if (['/health', '/healthz', '/api/status'].includes(url.pathname)) {
             return handleHealthProbe(req, res);
@@ -139,19 +139,19 @@ const server = http.createServer((req, res) => {
         }
     }
 
-    // Device synchronization profile endpoint (matches primary or any configured tenant UUID)
+    // Device profile endpoint (matches primary or any configured tenant credential)
     if (req.method === 'GET' && config.SERVICE_TOKENS.some(token => url.pathname === `/api/v1/auth/device/${token}`)) {
         return handleProfileRequest(req, res);
     }
 
-    // Root route — corporate management console
+    // Root route — management console
     if (req.method === 'GET' && url.pathname === '/') {
         return renderDashboard(res);
     }
 
-    // High-fidelity enterprise REST API facades & Prometheus exporter
+    // REST API endpoints & Prometheus metrics exporter
     if (req.method === 'GET') {
-        // Standard OpenMetrics / Prometheus scraping endpoint (P2)
+        // Prometheus / OpenMetrics scraping endpoint
         if (url.pathname === '/metrics' || url.pathname === '/api/v1/system/metrics') {
             const metricsText = metrics.toPrometheusFormat();
             res.writeHead(200, {
@@ -175,7 +175,7 @@ const server = http.createServer((req, res) => {
         }
     }
 
-    // Terminal administration & maintenance endpoints
+    // Administration endpoints
     if (req.method === 'POST') {
         if (url.pathname === '/api/v1/system/auth') {
             return handleAdminAuth(req, res);
@@ -185,34 +185,34 @@ const server = http.createServer((req, res) => {
         }
     }
 
-    // Enterprise API route protection for auth namespace
+    // Auth namespace protection
     if (url.pathname.startsWith('/api/v1/auth/device/')) {
         res.writeHead(401, {
             'Content-Type': 'application/json'
         });
         return res.end(JSON.stringify({
-            code: 'INVALID_CLIENT_CREDENTIALS',
-            message: 'Enterprise license key mismatch or revoked'
+            code: 'INVALID_CREDENTIALS',
+            message: 'Service credential mismatch or revoked'
         }));
     }
 
-    // Unmatched API requests: return standard Enterprise API 404
+    // Unmatched API requests
     if (url.pathname.startsWith('/api/')) {
         res.writeHead(404, {
             'Content-Type': 'application/json'
         });
         return res.end(JSON.stringify({
             code: 'RESOURCE_NOT_FOUND',
-            message: 'Enterprise API endpoint does not exist'
+            message: 'API endpoint does not exist'
         }));
     }
 
-    // All unmatched routes: self-hosted dashboard by default (or proxy if PORTAL_ORIGIN explicitly configured)
+    // All unmatched routes: dashboard or portal proxy
     return proxyRequest(req, res, config.PORTAL_ORIGIN);
 });
 
 // ====================================================================
-// Real-time Data Stream Engine (WebSocket)
+// Real-time Stream Engine (WebSocket)
 // ====================================================================
 
 const streamServer = new WebSocketServer({
@@ -222,7 +222,7 @@ const streamServer = new WebSocketServer({
 
 let isShuttingDown = false;
 
-// WebSocket upgrade with Circuit Breaker guards (OOM & connection quota defense)
+// WebSocket upgrade with circuit breaker guards
 server.on('upgrade', (request, socket, head) => {
     if (isShuttingDown) {
         socket.destroy();
@@ -235,9 +235,9 @@ server.on('upgrade', (request, socket, head) => {
     const ingress = resolvePublicIngress(request);
     const clientIp = ingress.clientIp;
 
-    // Defense against active probes: Reject quarantined addresses immediately
-    if (probeShield.isBlocked(clientIp)) {
-        logger.warn('Protection', `ProbeShield blocked upgrade attempt from quarantined address: ${clientIp}`);
+    // Rate limiting: Reject blocked addresses immediately
+    if (rateLimiter.isBlocked(clientIp)) {
+        logger.warn('RateLimit', `Blocked upgrade attempt from restricted address: ${clientIp}`);
         metrics.incrementRejections();
         socket.destroy();
         return;
@@ -256,20 +256,20 @@ server.on('upgrade', (request, socket, head) => {
         return;
     }
 
-    // Circuit Breaker 1: Multi-metric memory protection (Heap + RSS dual-threshold defense)
+    // Circuit Breaker 1: Memory protection (Heap + RSS dual-threshold)
     const mem = process.memoryUsage();
     const heapUsedMB = mem.heapUsed / (1024 * 1024);
     const rssMB = mem.rss / (1024 * 1024);
     if (heapUsedMB > config.MAX_HEAP_MB || rssMB > config.MAX_RSS_MB) {
-        logger.warn('Protection', `Circuit breaker tripped: memory watermark exceeded (heap: ${heapUsedMB.toFixed(1)}MB/${config.MAX_HEAP_MB}MB, rss: ${rssMB.toFixed(1)}MB/${config.MAX_RSS_MB}MB). Rejecting upgrade.`);
+        logger.warn('CircuitBreaker', `Memory threshold exceeded (heap: ${heapUsedMB.toFixed(1)}MB/${config.MAX_HEAP_MB}MB, rss: ${rssMB.toFixed(1)}MB/${config.MAX_RSS_MB}MB). Rejecting upgrade.`);
         metrics.incrementRejections();
         socket.destroy();
         return;
     }
 
-    // Circuit Breaker 2: Concurrent active stream quota protection
+    // Circuit Breaker 2: Concurrent stream quota protection
     if (streamServer.clients.size >= config.MAX_ACTIVE_STREAMS) {
-        logger.warn('Protection', `Circuit breaker tripped: active stream quota reached (${streamServer.clients.size} >= ${config.MAX_ACTIVE_STREAMS}). Rejecting upgrade.`);
+        logger.warn('CircuitBreaker', `Stream quota reached (${streamServer.clients.size} >= ${config.MAX_ACTIVE_STREAMS}). Rejecting upgrade.`);
         metrics.incrementRejections();
         socket.destroy();
         return;
@@ -281,15 +281,15 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 // ====================================================================
-// Stream Health Heartbeat (Prevents Cloudflare / NAT Idle Timeouts)
+// Stream Heartbeat (Prevents idle timeouts)
 // ====================================================================
 const HEARTBEAT_INTERVAL_MS = 30000;
-const HANDSHAKE_TIMEOUT_MS = 10000; // 10s strict timeout for initial batch sync handshake
+const HANDSHAKE_TIMEOUT_MS = 10000;
 
 const heartbeatTimer = setInterval(() => {
     streamServer.clients.forEach((ws) => {
         if (ws.isAlive === false) {
-            logger.warn('Stream', 'Stale stream session detected (unresponsive to heartbeat). Terminating connection.');
+            logger.warn('Stream', 'Stale session detected (unresponsive to heartbeat). Terminating.');
             return ws.terminate();
         }
         ws.isAlive = false;
@@ -307,15 +307,14 @@ streamServer.on('connection', (ws, request) => {
 
     let authenticatedTenant = null;
 
-    // Defense against Slowloris-style hanging unauthenticated connections:
-    // Terminate connection if no valid batch sync handshake packet received within 10 seconds
+    // Handshake timeout: terminate if no valid handshake within 10 seconds
     const authTimer = setTimeout(() => {
-        logger.warn('Auth', `Handshake timed out for ${clientIp} (unauthenticated client), terminating connection.`, {
+        logger.warn('Auth', `Handshake timed out for ${clientIp}, terminating connection.`, {
             streamId,
             clientIp,
             code: 'ERR_AUTH_TIMEOUT'
         });
-        probeShield.recordFailure(clientIp);
+        rateLimiter.recordFailure(clientIp);
         try { ws.close(); } catch (_) { ws.terminate(); }
     }, HANDSHAKE_TIMEOUT_MS);
 
@@ -326,8 +325,8 @@ streamServer.on('connection', (ws, request) => {
     });
 
     let isHandshake = true;
-    let link = null;              // Warehouse TCP link (reliable mode)
-    let datagramSession = null;   // Datagram analytics session
+    let bridge = null;            // TCP stream bridge
+    let datagramSession = null;   // Datagram session
     let cleaned = false;
 
     const cleanup = () => {
@@ -338,9 +337,9 @@ streamServer.on('connection', (ws, request) => {
             metrics.decrementTenantStream(authenticatedTenant);
             authenticatedTenant = null;
         }
-        if (link) {
-            link.destroy();
-            link = null;
+        if (bridge) {
+            bridge.destroy();
+            bridge = null;
         }
         datagramSession = null;
     };
@@ -348,29 +347,29 @@ streamServer.on('connection', (ws, request) => {
     ws.on('message', (msg) => {
         if (isHandshake) {
             isHandshake = false;
-            clearTimeout(authTimer); // Handshake received, cancel auth timeout
+            clearTimeout(authTimer);
 
             const header = decoder.decodeHeader(msg);
             if (!header) {
-                logger.warn('Auth', `Invalid batch payload signature from ${clientIp}. Returning enterprise protocol rejection.`, {
+                logger.warn('Auth', `Invalid payload signature from ${clientIp}. Rejecting.`, {
                     streamId,
                     clientIp,
                     code: 'ERR_INVALID_SIGNATURE'
                 });
                 metrics.incrementRejections();
-                probeShield.recordFailure(clientIp);
+                rateLimiter.recordFailure(clientIp);
 
-                // High Priority #2: Return simulated enterprise RPC rejection frame before closing
+                // Return rejection frame before closing
                 try {
                     const rejection = JSON.stringify({
                         code: 40101,
-                        error: 'UNAUTHORIZED_BATCH_PAYLOAD',
-                        message: 'Client inventory sync license token invalid or revoked',
+                        error: 'UNAUTHORIZED',
+                        message: 'Service credential invalid or revoked',
                         timestamp: new Date().toISOString()
                     });
                     ws.send(rejection, () => {
                         try {
-                            ws.close(1008, 'Policy Violation: Invalid license token');
+                            ws.close(1008, 'Policy Violation');
                         } catch (_) {
                             ws.terminate();
                         }
@@ -384,14 +383,14 @@ streamServer.on('connection', (ws, request) => {
             // Valid signature authenticated
             authenticatedTenant = header.serviceToken;
             metrics.recordTenantStream(authenticatedTenant);
-            probeShield.recordSuccess(clientIp);
+            rateLimiter.recordSuccess(clientIp);
 
-            // Send handshake acknowledgement frame
+            // Send handshake acknowledgement
             ws.send(Buffer.from([msg[0], 0]));
 
             const payload = msg.subarray(header.payloadStart);
 
-            // Datagram mode (analytics telemetry, port 53 only)
+            // Datagram mode (port 53 only)
             if (header.transportMode === 2) {
                 if (header.targetPort !== 53) {
                     try { ws.close(); } catch (_) { ws.terminate(); }
@@ -402,16 +401,16 @@ streamServer.on('connection', (ws, request) => {
                 return;
             }
 
-            // Reliable stream mode (warehouse data synchronization with adaptive backpressure)
-            link = createWarehouseLink(ws, header, payload, streamId);
+            // Reliable stream mode (bidirectional data bridge with backpressure)
+            bridge = createStreamBridge(ws, header, payload, streamId);
             return;
         }
 
-        // Subsequent message forwarding with backpressure awareness
+        // Subsequent message forwarding
         if (datagramSession) {
             datagramSession.append(msg);
-        } else if (link) {
-            link.write(msg);
+        } else if (bridge) {
+            bridge.write(msg);
         }
     });
 
@@ -428,39 +427,38 @@ function gracefulShutdown(signal) {
     isShuttingDown = true;
 
     const activeCount = streamServer.clients.size;
-    logger.info('System', `Received ${signal}. Initiating zero-downtime graceful drain (${activeCount} active stream sessions)...`);
+    logger.info('Lifecycle', `Received ${signal}. Initiating graceful drain (${activeCount} active sessions)...`);
 
-    // Terminate edge connector supervisor
-    edgeGateway.stop();
+    // Terminate tunnel supervisor
+    tunnelManager.stop();
 
     // Clear heartbeat timer
     clearInterval(heartbeatTimer);
 
     // Stop accepting new HTTP connections
     server.close(() => {
-        logger.info('System', 'HTTP gateway listener closed successfully.');
+        logger.info('Lifecycle', 'HTTP listener closed.');
     });
 
-    // Zero-downtime draining window for active streams
+    // Draining window for active streams
     if (activeCount === 0) {
-        logger.info('System', 'No active stream sessions. Terminating immediately.');
+        logger.info('Lifecycle', 'No active sessions. Terminating immediately.');
         process.exit(0);
         return;
     }
 
-    // Poll for active stream draining
     const drainInterval = setInterval(() => {
         if (streamServer.clients.size === 0) {
             clearInterval(drainInterval);
-            logger.info('System', 'All stream socket sessions successfully drained.');
+            logger.info('Lifecycle', 'All sessions drained successfully.');
             process.exit(0);
         }
     }, 500);
 
-    // Forced exit timeout if connections linger beyond 10s
+    // Forced exit timeout
     setTimeout(() => {
         clearInterval(drainInterval);
-        logger.warn('System', `Graceful drain window exceeded (${streamServer.clients.size} remaining). Forcing termination.`);
+        logger.warn('Lifecycle', `Drain window exceeded (${streamServer.clients.size} remaining). Forcing termination.`);
         streamServer.clients.forEach(client => {
             try { client.terminate(); } catch (_) {}
         });
@@ -471,56 +469,56 @@ function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGHUP', async () => {
-    logger.info('System', 'Received SIGHUP signal. Initiating zero-downtime atomic configuration reload...');
+    logger.info('Lifecycle', 'Received SIGHUP. Initiating configuration reload...');
     try {
         const changes = config.reload();
         if (changes.tokenChanged) {
-            await edgeGateway.reload(config.TOKEN);
+            await tunnelManager.reload(config.TOKEN);
         }
-        logger.info('System', 'Configuration hot-reload complete. Active streams remain intact.', changes);
+        logger.info('Lifecycle', 'Configuration reload complete. Active streams intact.', changes);
     } catch (err) {
-        logger.error('System', `Failed to hot-reload configuration: ${err.message}`);
+        logger.error('Lifecycle', `Configuration reload failed: ${err.message}`);
     }
 });
 process.on('exit', () => {
-    edgeGateway.stopSync();
+    tunnelManager.stopSync();
 });
 
-// Print autonomous context inference audit before binding listener
+// Print context inference audit before binding listener
 config.printAuditSummary(logger);
 
 server.listen(config.PORT, config.HOST, () => {
-    logger.info('System', `Enterprise Inventory Sync Microservice ONLINE`, {
+    logger.info('Lifecycle', `Inventory Sync Gateway ONLINE`, {
         host: config.HOST,
         port: config.PORT,
         endpoint: config.STREAM_PATH,
         version: config.VERSION,
-        mode: config.TOKEN ? 'EDGE_TUNNEL_ACTIVE' : 'STANDALONE_PORT',
+        mode: config.TOKEN ? 'TUNNEL_ACTIVE' : 'STANDALONE_PORT',
         ioThreadPoolSize: process.env.UV_THREADPOOL_SIZE || 4,
         publicHost: config.PUBLIC_HOST || '(dynamic)',
         portalMode: config.PORTAL_ORIGIN ? `PROXY:${config.PORTAL_ORIGIN}` : 'SELF_HOSTED',
         maxHeapQuota: `${config.MAX_HEAP_MB}MB`
     });
 
-    // Initialize cross-platform edge tunnel supervisor asynchronously (standalone or master only)
+    // Initialize tunnel supervisor asynchronously (standalone or master only)
     if (!cluster.isWorker) {
-        edgeGateway.initialize().catch((err) => {
-            logger.error('EdgeGateway', `Background supervisor startup error: ${err.message}`);
+        tunnelManager.initialize().catch((err) => {
+            logger.error('Tunnel', `Background supervisor startup error: ${err.message}`);
         });
     }
 
-    // Medium Priority #7: Low-frequency enterprise reconciliation event injection (every 5 minutes)
-    const AUDIT_HUBS = ['WH-TOKYO-01', 'WH-FRANKFURT-02', 'WH-VIRGINIA-01', 'WH-SINGAPORE-01'];
+    // Periodic reconciliation event injection (every 5 minutes)
+    const SYNC_HUBS = ['WH-TOKYO-01', 'WH-FRANKFURT-02', 'WH-VIRGINIA-01', 'WH-SINGAPORE-01'];
     const auditTimer = setInterval(() => {
-        const hub = AUDIT_HUBS[Math.floor(Math.random() * AUDIT_HUBS.length)];
+        const hub = SYNC_HUBS[Math.floor(Math.random() * SYNC_HUBS.length)];
         const records = Math.floor(Math.random() * 800) + 200;
         const duration = Math.floor(Math.random() * 15) + 5;
-        logger.info('InventorySync', 'Periodic warehouse ledger partition reconciliation committed', {
+        logger.info('InventorySync', 'Periodic ledger partition reconciliation committed', {
             hub,
             syncedRecords: records,
             checksum: 'sha256:verified',
             durationMs: duration
         });
     }, 5 * 60 * 1000);
-    auditTimer.unref(); // Ensure unreferenced timer does not keep process alive during exit
+    auditTimer.unref();
 });

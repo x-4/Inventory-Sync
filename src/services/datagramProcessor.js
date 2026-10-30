@@ -1,7 +1,7 @@
 // ====================================================================
-// Telemetry Data Aggregator
-// Hybrid Datagram Processing Engine: Native UDP fast-path with DoH fallback
-// Features: LRU caching, UDP circuit breaker, and concurrent query dispatch
+// Datagram Processor
+// Hybrid UDP/HTTPS processing engine with LRU caching,
+// circuit breaker, and concurrent query dispatch
 // ====================================================================
 
 const dgram = require('dgram');
@@ -9,25 +9,25 @@ const config = require('../config');
 const metrics = require('../utils/metrics');
 const logger = require('../utils/logger');
 
-// High-availability external analytics processing endpoints (DoH)
-const AGGREGATION_ENDPOINTS = [
+// External processing endpoints (DoH)
+const PROCESSING_ENDPOINTS = [
     'aHR0cHM6Ly8xLjEuMS4xL2Rucy1xdWVyeQ==',
     'aHR0cHM6Ly9kbnMuZ29vZ2xlL2Rucy1xdWVyeQ==',
     'aHR0cHM6Ly85LjkuOS45L2Rucy1xdWVyeQ=='
 ].map(enc => Buffer.from(enc, 'base64').toString('utf8'));
 
 // Direct UDP fast-path targets
-const FAST_UDP_UPSTREAMS = ['1.1.1.1', '8.8.8.8'];
+const UDP_TARGETS = ['1.1.1.1', '8.8.8.8'];
 
 // UDP Circuit Breaker state
 let udpCircuitOpenUntil = 0;
 let udpConsecutiveFailures = 0;
 const UDP_MAX_FAILURES = 3;
-const UDP_CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000; // 5 min cooldown
+const UDP_CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
 
-// --- LRU Cache for analytics query deduplication with SWR (Stale-While-Revalidate) ---
+// --- LRU Cache with SWR (Stale-While-Revalidate) ---
 
-class AnalyticsCache {
+class ResponseCache {
     constructor(maxSize = config.CACHE_MAX_ENTRIES, ttlMs = config.CACHE_TTL_MS) {
         this._maxSize = maxSize;
         this._ttlMs = ttlMs;
@@ -74,16 +74,15 @@ class AnalyticsCache {
     }
 }
 
-const queryCache = new AnalyticsCache();
+const responseCache = new ResponseCache();
 
 // In-flight query deduplication map: cacheKey -> Promise<Buffer|null> (Singleflight)
 const inflightQueries = new Map();
 
 /**
- * Attempts ultra-low-latency direct UDP query (1-10ms fast path)
- * Automatically yields null on timeout or network block
+ * Attempts low-latency direct UDP query
  */
-function queryNativeUdp(queryPayload, host, port = 53, timeoutMs = 250) {
+function queryUdp(queryPayload, host, port = 53, timeoutMs = 250) {
     return new Promise((resolve) => {
         let finished = false;
         let socket = null;
@@ -139,22 +138,22 @@ function queryNativeUdp(queryPayload, host, port = 53, timeoutMs = 250) {
 async function executeQuery(queryPayload, cacheKey) {
     const now = Date.now();
 
-    // Step 1: Fast-path via native UDP with circuit breaker & concurrent racing
+    // Step 1: Fast-path via native UDP with circuit breaker
     if (now >= udpCircuitOpenUntil) {
         try {
             const udpResp = await Promise.race(
-                FAST_UDP_UPSTREAMS.map(host => queryNativeUdp(queryPayload, host, 53, 250))
+                UDP_TARGETS.map(host => queryUdp(queryPayload, host, 53, 250))
             );
 
             if (udpResp && udpResp.length > 0) {
-                udpConsecutiveFailures = 0; // Reset circuit breaker counter
-                queryCache.set(cacheKey, udpResp);
+                udpConsecutiveFailures = 0;
+                responseCache.set(cacheKey, udpResp);
                 return udpResp;
             } else {
                 udpConsecutiveFailures++;
                 if (udpConsecutiveFailures >= UDP_MAX_FAILURES) {
                     udpCircuitOpenUntil = Date.now() + UDP_CIRCUIT_COOLDOWN_MS;
-                    logger.warn('Telemetry', 'Native UDP 53 blocked/timed out repeatedly. Tripping UDP circuit breaker for 5m.');
+                    logger.warn('Datagram', 'UDP path blocked/timed out repeatedly. Circuit breaker active for 5m.');
                 }
             }
         } catch (_) {
@@ -162,8 +161,8 @@ async function executeQuery(queryPayload, cacheKey) {
         }
     }
 
-    // Step 2: Fallback to DoH over HTTPS (high-survivability path)
-    for (const endpoint of AGGREGATION_ENDPOINTS) {
+    // Step 2: Fallback to HTTPS (high-survivability path)
+    for (const endpoint of PROCESSING_ENDPOINTS) {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), config.REQUEST_TIMEOUT_MS);
@@ -182,23 +181,23 @@ async function executeQuery(queryPayload, cacheKey) {
 
             if (response.ok) {
                 const respBuffer = Buffer.from(await response.arrayBuffer());
-                queryCache.set(cacheKey, respBuffer);
+                responseCache.set(cacheKey, respBuffer);
                 return respBuffer;
             }
         } catch (_) {
-            continue; // Failover to next endpoint
+            continue;
         }
     }
 
-    logger.warn('Telemetry', 'All hybrid telemetry aggregation backends timed out or failed');
+    logger.warn('Datagram', 'All processing backends timed out or failed');
     return null;
 }
 
 /**
- * Dispatches a single analytics query with hybrid routing, Singleflight request coalescing,
- * and Stale-While-Revalidate (SWR) cache protection.
+ * Dispatches a query with hybrid routing, singleflight coalescing,
+ * and stale-while-revalidate cache.
  * @param {Buffer} queryPayload - Raw query data
- * @param {boolean} [isRevalidation=false] - Whether this is a background SWR revalidation
+ * @param {boolean} [isRevalidation=false] - Whether this is a background revalidation
  * @returns {Promise<Buffer|null>}
  */
 async function dispatchQuery(queryPayload, isRevalidation = false) {
@@ -209,18 +208,18 @@ async function dispatchQuery(queryPayload, isRevalidation = false) {
 
     // 1. Check cache with SWR support
     if (!isRevalidation) {
-        const cached = queryCache.get(cacheKey);
+        const cached = responseCache.get(cacheKey);
         if (cached) {
             metrics.incrementCacheHits();
             if (cached.isStale) {
-                // Return stale data immediately; trigger background revalidation without blocking caller
+                // Return stale data immediately; trigger background revalidation
                 dispatchQuery(queryPayload, true).catch(() => {});
             }
             return cached.data;
         }
     }
 
-    // 2. Singleflight: If identical query is already in-flight, await and share the result
+    // 2. Singleflight: share result if identical query already in-flight
     if (inflightQueries.has(cacheKey)) {
         return inflightQueries.get(cacheKey);
     }
@@ -237,7 +236,7 @@ async function dispatchQuery(queryPayload, isRevalidation = false) {
 
 
 /**
- * Creates a datagram analytics session bound to a WebSocket connection
+ * Creates a datagram session bound to a WebSocket connection
  * Handles frame assembly, buffer management, and concurrent query dispatch
  * @param {WebSocket} ws - Client WebSocket connection
  * @param {string} [streamId='st-unknown'] - Unique stream tracking identifier
@@ -248,7 +247,7 @@ function createDatagramSession(ws, streamId = 'st-unknown') {
     let draining = false;
 
     /**
-     * Synchronously extracts all complete frames from the buffer
+     * Extracts all complete frames from the buffer
      * and dispatches each as an independent async query
      */
     function drain() {
@@ -287,7 +286,7 @@ function createDatagramSession(ws, streamId = 'st-unknown') {
         append(data) {
             buffer = Buffer.concat([buffer, data]);
             if (buffer.length > config.DATAGRAM_BUFFER_LIMIT) {
-                logger.warn('Telemetry', 'Datagram buffer limit exceeded, terminating stream', {
+                logger.warn('Datagram', 'Buffer limit exceeded, terminating stream', {
                     streamId,
                     code: 'ERR_BUFFER_OVERFLOW',
                     size: buffer.length
@@ -303,7 +302,6 @@ function createDatagramSession(ws, streamId = 'st-unknown') {
 module.exports = {
     createDatagramSession,
     dispatchQuery,
-    AnalyticsCache,
-    purgeAnalyticsCache: () => queryCache.clear()
+    ResponseCache,
+    purgeResponseCache: () => responseCache.clear()
 };
-

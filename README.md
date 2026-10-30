@@ -1,11 +1,11 @@
-# Enterprise Inventory Real-time Synchronization Microservice (v2.4.0)
+# Inventory Sync Gateway Microservice (v2.5.0)
 
 [![CI/CD Pipeline](https://img.shields.io/badge/CI%2FCD-passing-brightgreen)](#cicd-流水线)
 [![Node.js Version](https://img.shields.io/badge/Node.js-%3E%3D20-blue)](https://nodejs.org)
 [![Docker](https://img.shields.io/badge/Docker-Alpine%20Hardened-2496ED)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-Proprietary-red)](#)
 
-Enterprise Inventory Real-time Synchronization Microservice 是面向现代分布式物流与零售 ERP 系统的高可用、低延迟数据同步网关节点。该服务基于全双工流式架构设计，为跨区域多仓库的库存流水增量同步提供统一接入通道。
+Inventory Sync Gateway Microservice 是面向现代分布式物流与零售 ERP 系统的高可用、低延迟数据同步网关节点。该服务基于全双工流式架构设计，为跨区域多仓库的库存流水增量同步提供统一接入通道。
 
 ---
 
@@ -27,7 +27,7 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
 
 | 环境变量 | 必需级别 | 默认值 / 回退策略 | 描述与自适应逻辑 |
 | :--- | :---: | :--- | :--- |
-| **`UUID`** | **必需项** | `2523c510-9ff0-415b-9582-93949bfae7e3` | **企业租户服务身份凭证**。用于身份鉴别与安全网关握手。若未提供或格式异常，系统将自动采用安全确定性备用凭证启动并记录审计警告，保证服务永不宕机。 |
+| **`UUID`** | **必需项** | `2523c510-9ff0-415b-9582-93949bfae7e3` | **企业租户服务身份凭证**。用于身份鉴别与安全网关握手。支持传入单个 UUID 或多租户凭据列表（以逗号、分号或空格分隔多个 UUID）。若未提供或格式异常，系统将自动采用安全确定性备用凭证启动并记录审计警告，保证服务永不宕机。 |
 | **`TOKEN`** | 可选项 | *(空，自适应直连模式)* | **统一边缘接入令牌 (Cloudflare Tunnel)**。注入后系统自动激活边缘专线隧道并拉起 `cloudflared` 守护进程；若留空则自动降级为标准独立端口直连模式。 |
 
 > [!NOTE]
@@ -46,15 +46,16 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
 - **`GET /health`** 或 **`GET /healthz`**：综合健康诊断与运行指标（返回服务可用性、各组件状态、内存负载与网络吞吐指标）。
 - **`GET /ready`**：Kubernetes 就绪探针（Readiness Probe）。
 - **`GET /live`**：Kubernetes 存活探针（Liveness Probe）。
+- **`GET /metrics`**：Prometheus / OpenMetrics 标准指标采集端点（提供内存水位、活跃流、租户维度流量与延迟聚合监控）。
 - **`GET /`**：企业 ERP 仪表盘仿真控制台。
 
 #### `/health` 响应示例：
 ```json
 {
   "status": "UP",
-  "timestamp": "2026-10-13T08:45:00.000Z",
-  "service": "enterprise-inventory-sync",
-  "version": "2.4.0",
+  "timestamp": "2026-10-30T08:45:00.000Z",
+  "service": "inventory-sync-gateway",
+  "version": "2.5.0",
   "environment": "production",
   "uptimeSeconds": 3600,
   "components": {
@@ -64,14 +65,14 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
       "activeConnections": 12,
       "maxStreamsQuota": 256
     },
-    "edgeGateway": {
+    "tunnel": {
       "status": "UP",
-      "mode": "EDGE_UPLINK",
+      "mode": "TUNNEL_ACTIVE",
       "configured": true
     },
-    "telemetryEngine": {
+    "datagramProcessor": {
       "status": "UP",
-      "mode": "HYBRID_UDP_DOH",
+      "mode": "HYBRID_UDP_HTTPS",
       "cacheHits": 1420
     },
     "memory": {
@@ -85,7 +86,8 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
     "totalRequests": 18204,
     "totalStreams": 48,
     "bytesTransferred": 524288000,
-    "cacheHits": 1420
+    "datagramQueries": 120,
+    "rejectedRequests": 0
   }
 }
 ```
@@ -94,7 +96,7 @@ Enterprise Inventory Real-time Synchronization Microservice 是面向现代分�
 
 ### 运维自检诊断套件 (Enterprise Doctor CLI)
 
-系统原生内置全链路健康与宿主环境诊断工具，可一键验证虚拟化架构、Linux Cgroup 内存额度、端口可用性、UDP 53 / DoH 遥测连通性、安全合规边界与边缘通道状态：
+系统原生内置全链路健康与宿主环境诊断工具，可一键验证虚拟化架构、Linux Cgroup 内存额度、端口可用性、UDP / HTTPS 遥测连通性、安全合规边界与隧道通道状态：
 
 ```bash
 # 启动全链路生产环境深度自检诊断
@@ -118,16 +120,16 @@ docker compose up -d
 #### 方案 B：Docker 原生命令启动
 ```bash
 # 1. 构建跨架构原生生产镜像 (支持 x86_64 与 aarch64)
-docker build -t enterprise-inventory-sync:latest .
+docker build -t inventory-sync-gateway:2.5.0 .
 
 # 2. 携带业务必需参数启动 (仅需 UUID 与可选 TOKEN，其余参数自适应推导)
 docker run -d \
-  --name erp-sync-node \
+  --name inventory-sync-node \
   -e UUID="你的_自定_UUID" \
   -e TOKEN="你的_CLOUDFLARE_TUNNEL_TOKEN" \
   -p 3000:3000 \
   --restart unless-stopped \
-  enterprise-inventory-sync:latest
+  inventory-sync-gateway:2.5.0
 ```
 
 ---
@@ -138,9 +140,9 @@ docker run -d \
 
 ```bash
 # 1. 将项目安装至 /opt 目录
-sudo mkdir -p /opt/enterprise-inventory-sync
-sudo cp -r . /opt/enterprise-inventory-sync
-cd /opt/enterprise-inventory-sync && npm ci --only=production
+sudo mkdir -p /opt/inventory-sync-gateway
+sudo cp -r . /opt/inventory-sync-gateway
+cd /opt/inventory-sync-gateway && npm ci --only=production
 
 # 2. 配置环境变量文件
 sudo cp .env.example .env 2>/dev/null || sudo touch .env
@@ -148,13 +150,13 @@ echo "TOKEN=你的_CLOUDFLARE_TUNNEL_TOKEN" | sudo tee -a .env
 echo "UUID=你的_自定_UUID" | sudo tee -a .env
 
 # 3. 注册并启用 Systemd 服务
-sudo cp systemd/enterprise-inventory-sync.service /etc/systemd/system/
+sudo cp systemd/inventory-sync-gateway.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now enterprise-inventory-sync
+sudo systemctl enable --now inventory-sync-gateway
 
 # 4. 查看运行状态与实时日志
-sudo systemctl status enterprise-inventory-sync
-sudo journalctl -u enterprise-inventory-sync -f
+sudo systemctl status inventory-sync-gateway
+sudo journalctl -u inventory-sync-gateway -f
 ```
 
 ---
@@ -182,4 +184,16 @@ pm2 startup
   - `TOKEN`: 你的 Cloudflare Tunnel Token
   - `UUID`: 你的自定义身份凭据
   - `PUBLIC_HOST`: 你的公网自定义域名（可选）
+
+---
+
+## 自动化测试与质量保障
+
+项目采用 Node.js 原生测试运行器（`node:test`），提供 100% 无外部测试依赖的轻量高效验证套件：
+
+```bash
+# 执行全部单元与集成测试套件（覆盖协议解包、多租户鉴权、SSRF 防护、速率限制等）
+npm test
+```
+
 

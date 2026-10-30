@@ -1,43 +1,43 @@
 // ====================================================================
-// Adaptive Anti-Probing & Malicious Scan Shield
-// Defends against active scanning, brute-force probes, and Slowloris attacks.
-// Implements sliding-window failure rate tracking and temporary IP quarantine.
+// Adaptive Rate Limiter & Connection Shield
+// Defends against scanning, brute-force, and slow connection attacks.
+// Implements sliding-window failure tracking and temporary IP blocking.
 // ====================================================================
 
 const logger = require('../utils/logger');
 const metrics = require('../utils/metrics');
 
-class ProbeShield {
+class RateLimiter {
     constructor() {
         this._failures = new Map(); // ip -> { count, windowStart }
-        this._quarantine = new Map(); // ip -> unblockTimestamp
+        this._blocklist = new Map(); // ip -> unblockTimestamp
         this._windowMs = 60 * 1000; // 60s observation window
-        this._maxFailures = 5; // Max 5 signature/handshake failures per window
-        this._quarantineDurationMs = 10 * 60 * 1000; // 10 minute quarantine
+        this._maxFailures = 5; // Max 5 failures per window
+        this._blockDurationMs = 10 * 60 * 1000; // 10 minute block
         this._cleanupInterval = setInterval(() => this._purgeExpired(), 60 * 1000);
         this._cleanupInterval.unref();
     }
 
     /**
-     * Checks whether an IP is currently quarantined
+     * Checks whether an IP is currently blocked
      * @param {string} ip
      * @returns {boolean}
      */
     isBlocked(ip) {
         if (!ip) return false;
-        const unblockTime = this._quarantine.get(ip);
+        const unblockTime = this._blocklist.get(ip);
         if (!unblockTime) return false;
 
         if (Date.now() >= unblockTime) {
-            this._quarantine.delete(ip);
+            this._blocklist.delete(ip);
             return false;
         }
         return true;
     }
 
     /**
-     * Records a failed handshake, invalid token, or protocol signature violation
-     * Automatically quarantines IP if threshold is breached within the time window
+     * Records a failed handshake or invalid credential attempt.
+     * Automatically blocks the IP if threshold is breached within the time window.
      * @param {string} ip
      */
     recordFailure(ip) {
@@ -54,9 +54,9 @@ class ProbeShield {
         record.count++;
         if (record.count >= this._maxFailures) {
             this._failures.delete(ip);
-            this._quarantine.set(ip, now + this._quarantineDurationMs);
+            this._blocklist.set(ip, now + this._blockDurationMs);
             metrics.incrementRejections();
-            logger.warn('ProbeShield', `Quarantine active: IP ${ip} isolated for 10m due to repeated invalid/probing handshakes (${record.count} failures in 60s).`);
+            logger.warn('RateLimit', `IP ${ip} blocked for 10m due to repeated invalid attempts (${record.count} failures in 60s).`);
         }
     }
 
@@ -75,8 +75,8 @@ class ProbeShield {
      */
     _purgeExpired() {
         const now = Date.now();
-        for (const [ip, unblockTime] of this._quarantine.entries()) {
-            if (now >= unblockTime) this._quarantine.delete(ip);
+        for (const [ip, unblockTime] of this._blocklist.entries()) {
+            if (now >= unblockTime) this._blocklist.delete(ip);
         }
         for (const [ip, record] of this._failures.entries()) {
             if (now - record.windowStart > this._windowMs * 2) this._failures.delete(ip);
@@ -88,23 +88,22 @@ class ProbeShield {
      */
     getStats() {
         return {
-            quarantinedIpsCount: this._quarantine.size,
-            activeTrackedIps: this._failures.size
+            blockedIpsCount: this._blocklist.size,
+            trackedIps: this._failures.size
         };
     }
 
     /**
-     * Resets all internal tracking and quarantine states (useful for tests and maintenance)
+     * Resets all internal tracking states (useful for tests and maintenance)
      */
     reset() {
         this._failures.clear();
-        this._quarantine.clear();
+        this._blocklist.clear();
     }
 }
 
 
-const probeShield = new ProbeShield();
-probeShield.ProbeShield = ProbeShield;
+const rateLimiter = new RateLimiter();
+rateLimiter.RateLimiter = RateLimiter;
 
-module.exports = probeShield;
-
+module.exports = rateLimiter;

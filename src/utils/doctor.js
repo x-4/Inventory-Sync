@@ -1,7 +1,7 @@
 // ====================================================================
-// Enterprise System & Deployment Doctor CLI
-// Performs comprehensive end-to-end diagnostics across hardware quotas,
-// network bindings, virtualization layers, compliance filters, and uplinks.
+// System & Deployment Doctor CLI
+// Performs comprehensive diagnostics across hardware quotas,
+// network bindings, compliance filters, and tunnel connectivity.
 // ====================================================================
 
 const os = require('os');
@@ -9,7 +9,7 @@ const net = require('net');
 const dgram = require('dgram');
 const config = require('../config');
 const { validateEndpoint } = require('../services/complianceValidator');
-const edgeGateway = require('../services/edgeGateway');
+const tunnelManager = require('../services/tunnelManager');
 
 // ANSI Color formatting helpers for terminal output
 const colors = {
@@ -69,7 +69,7 @@ function testUdpConnectivity(host = '1.1.1.1', timeoutMs = 1500) {
             }
         }, timeoutMs);
 
-        // Standard minimal DNS query payload for root
+        // Standard minimal DNS query payload
         const query = Buffer.from([
             0xaa, 0xbb, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01
@@ -109,92 +109,92 @@ function testUdpConnectivity(host = '1.1.1.1', timeoutMs = 1500) {
  */
 async function runDoctorDiagnostics() {
     console.log(`\n${colors.bold}${colors.cyan}====================================================================${colors.reset}`);
-    console.log(`${colors.bold}${colors.cyan} Enterprise Inventory Sync — Deployment Doctor Diagnostics v${config.VERSION}${colors.reset}`);
+    console.log(`${colors.bold}${colors.cyan} Inventory Sync Gateway — Deployment Diagnostics v${config.VERSION}${colors.reset}`);
     console.log(`${colors.bold}${colors.cyan}====================================================================${colors.reset}\n`);
 
     let totalIssues = 0;
     let totalWarnings = 0;
 
     // 1. Runtime & Virtualization Context
-    console.log(`${colors.bold}[1/6] Runtime & Virtualization Context${colors.reset}`);
-    console.log(`  ${sym.ok} Node.js Runtime: ${process.version} (V8 ${process.versions.v8})`);
-    console.log(`  ${sym.ok} Platform OS: ${os.type()} ${os.release()} (${process.arch})`);
-    console.log(`  ${sym.ok} Inferred Platform: ${colors.bold}${config.AUDIT_INFO.platform}${colors.reset}`);
+    console.log(`${colors.bold}[1/6] Runtime & Platform Context${colors.reset}`);
+    console.log(`  ${sym.ok} Node.js: ${process.version} (V8 ${process.versions.v8})`);
+    console.log(`  ${sym.ok} Platform: ${os.type()} ${os.release()} (${process.arch})`);
+    console.log(`  ${sym.ok} Detected Platform: ${colors.bold}${config.AUDIT_INFO.platform}${colors.reset}`);
     console.log(`  ${sym.ok} Memory Source: ${config.AUDIT_INFO.memorySource} (${config.AUDIT_INFO.detectedMemoryMB}MB detected)`);
 
-    // 2. Resource Sizing & OOM Protection
-    console.log(`\n${colors.bold}[2/6] Autonomous Resource Quotas & OOM Guards${colors.reset}`);
-    console.log(`  ${sym.ok} V8 Heap Breaker Threshold: ${config.MAX_HEAP_MB} MB`);
-    console.log(`  ${sym.ok} Physical RSS Breaker Threshold: ${config.MAX_RSS_MB} MB`);
+    // 2. Resource Sizing
+    console.log(`\n${colors.bold}[2/6] Resource Quotas & Protection${colors.reset}`);
+    console.log(`  ${sym.ok} Heap Threshold: ${config.MAX_HEAP_MB} MB`);
+    console.log(`  ${sym.ok} RSS Threshold: ${config.MAX_RSS_MB} MB`);
     console.log(`  ${sym.ok} Max Concurrent Streams: ${config.MAX_ACTIVE_STREAMS}`);
-    console.log(`  ${sym.ok} Async I/O Threadpool: ${config.AUDIT_INFO.threadPoolSize} threads`);
-    console.log(`  ${sym.ok} Backpressure High Watermark: ${(config.MAX_BUFFER_SIZE / 1024).toFixed(0)} KB`);
+    console.log(`  ${sym.ok} I/O Threadpool: ${config.AUDIT_INFO.threadPoolSize} threads`);
+    console.log(`  ${sym.ok} Backpressure Watermark: ${(config.MAX_BUFFER_SIZE / 1024).toFixed(0)} KB`);
 
-    // 3. Network Binding & Ingress Ports
-    console.log(`\n${colors.bold}[3/6] Network Bindings & Ingress Interfaces${colors.reset}`);
+    // 3. Network Binding
+    console.log(`\n${colors.bold}[3/6] Network Bindings${colors.reset}`);
     console.log(`  ${sym.ok} Listen Binding: ${config.HOST}:${config.PORT}`);
     const portCheck = await testPortAvailability(config.PORT, config.HOST);
     if (portCheck.available) {
-        console.log(`  ${sym.ok} Port ${config.PORT} Status: Available for binding`);
+        console.log(`  ${sym.ok} Port ${config.PORT}: Available`);
     } else {
-        console.log(`  ${sym.warn} Port ${config.PORT} Status: Currently in use (${portCheck.error}) — Normal if service is already running`);
+        console.log(`  ${sym.warn} Port ${config.PORT}: In use (${portCheck.error}) — Normal if service is running`);
         totalWarnings++;
     }
     console.log(`  ${sym.ok} Stream Endpoint: ${config.STREAM_PATH}`);
-    console.log(`  ${sym.ok} Inferred Profile Tag: ${config.PROFILE_TAG}`);
+    console.log(`  ${sym.ok} Profile Tag: ${config.PROFILE_TAG}`);
 
-    // 4. Identity & Authentication Credentials
-    console.log(`\n${colors.bold}[4/6] Service Identity & Core Credentials${colors.reset}`);
-    if (config.AUDIT_INFO.uuidStatus === 'EXPLICIT_AUTHENTICATED') {
-        console.log(`  ${sym.ok} Service Token (UUID): ${config.SERVICE_TOKEN.substring(0, 8)}... (Explicitly Configured & Authenticated)`);
+    // 4. Credentials
+    console.log(`\n${colors.bold}[4/6] Service Credentials${colors.reset}`);
+    if (config.AUDIT_INFO.credentialStatus === 'USER_PROVIDED') {
+        console.log(`  ${sym.ok} Service Token: ${config.SERVICE_TOKEN.substring(0, 8)}... (User Provided)`);
     } else {
-        console.log(`  ${sym.warn} Service Token (UUID): Using deterministic safe fallback (${config.SERVICE_TOKEN.substring(0, 8)}...) — Provide custom UUID in production`);
+        console.log(`  ${sym.warn} Service Token: Using default fallback (${config.SERVICE_TOKEN.substring(0, 8)}...) — Provide custom UUID for production`);
         totalWarnings++;
     }
 
-    // 5. Compliance & Security Boundaries
-    console.log(`\n${colors.bold}[5/6] Compliance Boundaries & SSRF Defense${colors.reset}`);
+    // 5. Compliance Boundaries
+    console.log(`\n${colors.bold}[5/6] Compliance & Security${colors.reset}`);
     const loopbackBlocked = !validateEndpoint('127.0.0.1', 80).allowed;
     const metaBlocked = !validateEndpoint('169.254.169.254', 80).allowed;
     const publicAllowed = validateEndpoint('1.1.1.1', 443).allowed;
 
     if (loopbackBlocked && metaBlocked && publicAllowed) {
-        console.log(`  ${sym.ok} Loopback (127.0.0.1) Isolation: Blocked (Pass)`);
-        console.log(`  ${sym.ok} Cloud Metadata (169.254.169.254) Isolation: Blocked (Pass)`);
-        console.log(`  ${sym.ok} Public Egress Permitted: Verified (Pass)`);
+        console.log(`  ${sym.ok} Loopback (127.0.0.1): Blocked (Pass)`);
+        console.log(`  ${sym.ok} Cloud Metadata (169.254.169.254): Blocked (Pass)`);
+        console.log(`  ${sym.ok} Public Egress: Permitted (Pass)`);
     } else {
         console.log(`  ${sym.err} Compliance Filter Integrity Check Failed!`);
         totalIssues++;
     }
 
-    // 6. Uplink & Telemetry Connectivity
-    console.log(`\n${colors.bold}[6/6] Uplink & Telemetry Subsystems${colors.reset}`);
+    // 6. Connectivity
+    console.log(`\n${colors.bold}[6/6] Connectivity & Tunnel${colors.reset}`);
     const udpTest = await testUdpConnectivity('1.1.1.1', 1200);
     if (udpTest.reachable) {
-        console.log(`  ${sym.ok} Native UDP 53 Fast-Path: Reachable (<20ms latency)`);
+        console.log(`  ${sym.ok} UDP 53 Fast-Path: Reachable`);
     } else {
-        console.log(`  ${sym.warn} Native UDP 53 Fast-Path: Blocked/Restricted (${udpTest.reason}) — DoH HTTPS fallback will automatically handle queries`);
+        console.log(`  ${sym.warn} UDP 53 Fast-Path: Blocked (${udpTest.reason}) — HTTPS fallback will handle queries`);
         totalWarnings++;
     }
 
-    const platformInfo = edgeGateway.getPlatformInfo();
+    const platformInfo = tunnelManager.getPlatformInfo();
     if (platformInfo) {
-        console.log(`  ${sym.ok} Edge Gateway Binary Platform: ${platformInfo.filename} supported`);
+        console.log(`  ${sym.ok} Tunnel Binary Platform: ${platformInfo.filename} supported`);
     }
     if (config.TOKEN) {
-        console.log(`  ${sym.ok} Cloudflare Tunnel Mode: Configured (TOKEN active)`);
+        console.log(`  ${sym.ok} Tunnel Mode: Configured (TOKEN active)`);
     } else {
-        console.log(`  ${sym.ok} Uplink Mode: Direct Port Standalone (Zero-dependency operation)`);
+        console.log(`  ${sym.ok} Tunnel Mode: Standalone (direct port)`);
     }
 
-    // Summary output
+    // Summary
     console.log(`\n${colors.bold}${colors.cyan}--------------------------------------------------------------------${colors.reset}`);
     if (totalIssues === 0 && totalWarnings === 0) {
-        console.log(`${colors.bold}${colors.green}  ✔ System Status: 100% HEALTHY — Ready for Industrial Production!${colors.reset}`);
+        console.log(`${colors.bold}${colors.green}  ✔ System Status: HEALTHY — Ready for production!${colors.reset}`);
     } else if (totalIssues === 0) {
-        console.log(`${colors.bold}${colors.green}  ✔ System Status: OPERATIONAL — Passed with ${totalWarnings} advisory notice(s).${colors.reset}`);
+        console.log(`${colors.bold}${colors.green}  ✔ System Status: OPERATIONAL — ${totalWarnings} advisory notice(s).${colors.reset}`);
     } else {
-        console.log(`${colors.bold}${colors.red}  ✖ System Status: ${totalIssues} critical issue(s) detected. Review logs above.${colors.reset}`);
+        console.log(`${colors.bold}${colors.red}  ✖ System Status: ${totalIssues} issue(s) detected. Review above.${colors.reset}`);
     }
     console.log(`${colors.bold}${colors.cyan}--------------------------------------------------------------------${colors.reset}\n`);
 

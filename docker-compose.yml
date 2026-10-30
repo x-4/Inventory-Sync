@@ -5,14 +5,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: enterprise-inventory-sync:2.4.0
-    container_name: enterprise-inventory-sync
+    image: inventory-sync-gateway:2.5.0
+    container_name: inventory-sync-gateway
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      # 仅保留必需项：服务标识 UUID 与可选边缘专线接入令牌 TOKEN
-      # 其余所有网络绑定、内存水位线、连接配额及路径均由运行时上下文引擎自动推导并自适应
+      # Only essential: service credential UUID and optional tunnel token TOKEN
+      # All network binding, memory limits, stream quotas, and paths are auto-derived
       - UUID=${UUID:-2523c510-9ff0-415b-9582-93949bfae7e3}
       - TOKEN=${TOKEN:-}
     deploy:

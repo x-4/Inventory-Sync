@@ -612,7 +612,7 @@ function renderDashboard(res) {
         'Cache-Control': 'no-store, no-cache, must-revalidate',
         'X-Content-Type-Options': 'nosniff',
         'X-Frame-Options': 'SAMEORIGIN',
-        'Server': 'ERP-Gateway/2.4'
+        'Server': 'Sync-Gateway/2.5'
     });
     res.end(html);
 }

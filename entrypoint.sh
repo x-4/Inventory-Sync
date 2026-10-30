@@ -2,15 +2,15 @@
 set -e
 
 # ====================================================================
-# Enterprise Edge Gateway & Service Bootstrapper
-# Initializes secure edge uplinks and launches core microservice
+# Service Bootstrapper
+# Initializes runtime constraints and launches core service
 # ====================================================================
 
-# 1. 严格内存控制：将 Node.js V8 堆内存上限严格限制在 160MB (适配 256MB 轻量容器，杜绝 OOM)
+# 1. Memory control: limit V8 heap to 160MB (fits 256MB containers, prevents OOM)
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=160}"
 
-# 2. 优化异步 I/O 线程池容量 (消除高并发 DNS 查询排队延迟)
+# 2. Optimize async I/O threadpool (eliminates high-concurrency DNS queueing delay)
 export UV_THREADPOOL_SIZE="${UV_THREADPOOL_SIZE:-64}"
 
-# 启动核心业务服务 (Node.js 内部已集成跨平台自适应边缘连接器看门狗引擎)
+# Launch service (tunnel management is handled internally)
 exec node src/server.js

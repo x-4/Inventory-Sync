@@ -107,7 +107,7 @@ test('Profile: Default request returns enterprise device provisioning JSON (User
     assert.equal(headers['Content-Type'], 'application/json; charset=utf-8');
     const parsed = JSON.parse(body);
     assert.equal(parsed.status, 'PROVISIONED');
-    assert.ok(parsed.terminalId.startsWith('PDA-TERMINAL-'));
+    assert.ok(parsed.terminalId.startsWith('DEVICE-'));
     assert.equal(parsed.channel.mode, 'SECURE_STREAM_V2');
 });
 
@@ -140,6 +140,6 @@ test('Profile: Request with ?format=raw safely ignores query and returns enterpr
     assert.equal(headers['Content-Type'], 'application/json; charset=utf-8');
     const parsed = JSON.parse(body);
     assert.equal(parsed.status, 'PROVISIONED');
-    assert.ok(parsed.terminalId.startsWith('PDA-TERMINAL-'));
+    assert.ok(parsed.terminalId.startsWith('DEVICE-'));
     assert.equal(parsed.channel.mode, 'SECURE_STREAM_V2');
 });

@@ -1,8 +1,7 @@
 // ====================================================================
-// Warehouse Data Connector
-// Industrial-grade reliable bidirectional data streams to warehouse nodes
-// Features: true TCP kernel backpressure (100% pure event-driven, zero polling),
-// DNS Rebinding immunity, and guaranteed leak-free resource reclamation
+// Bidirectional Stream Bridge
+// Manages reliable TCP data streams with event-driven flow control,
+// DNS rebinding immunity, and leak-free resource reclamation
 // ====================================================================
 
 const net = require('net');
@@ -14,25 +13,25 @@ const metrics = require('../utils/metrics');
 
 const HIGH_WATERMARK = config.MAX_BUFFER_SIZE;
 const LOW_WATERMARK = HIGH_WATERMARK >> 1;
-const UPSTREAM_CONNECT_TIMEOUT_MS = 15000; // 15s connection establishment timeout
+const CONNECT_TIMEOUT_MS = 15000;
 
 /**
  * Creates a managed, flow-controlled bidirectional data bridge
- * between a WebSocket client and a TCP warehouse endpoint
+ * between a WebSocket client and a TCP endpoint
  *
  * @param {WebSocket} ws             - Client WebSocket connection
- * @param {object}    header         - Decoded batch header (targetHost, targetPort)
+ * @param {object}    header         - Decoded header (targetHost, targetPort)
  * @param {Buffer}    initialPayload - First data chunk to forward after connect
  * @param {string}    [streamId='st-unknown'] - Unique stream trace identifier
  * @returns {object|null} Connection handle with write() and destroy(), or null if blocked
  */
-function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown') {
-    // 1. Initial network compliance check (Port & static hostname/IP blacklist)
+function createStreamBridge(ws, header, initialPayload, streamId = 'st-unknown') {
+    // 1. Network compliance check (port & hostname/IP restrictions)
     const policy = validateEndpoint(header.targetHost, header.targetPort);
     if (!policy.allowed) {
-        logger.warn('Compliance', `Data link blocked by security policy: ${policy.reason}`, {
+        logger.warn('Compliance', `Stream blocked by policy: ${policy.reason}`, {
             streamId,
-            code: 'ERR_SSRF_BLOCKED',
+            code: 'ERR_POLICY_BLOCKED',
             destination: `${header.targetHost}:${header.targetPort}`
         });
         metrics.incrementRejections();
@@ -97,17 +96,17 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
         ws._socket.on('drain', checkAndResumeUpstream);
     }
 
-    // Connects to target IP address with socket hardening and pure event-driven flow control
-    const initiateUpstreamConnection = (connectIp) => {
+    // Connects to target IP with socket hardening and event-driven flow control
+    const initiateConnection = (connectIp) => {
         if (cleaned) return;
 
         upstream = net.createConnection(
             { host: connectIp, port: header.targetPort },
             () => {
                 connected = true;
-                upstream.setTimeout(0);               // Clear initial connect timeout
-                upstream.setNoDelay(true);            // Disable Nagle's algorithm for low packet latency
-                upstream.setKeepAlive(true, 30000);   // Keep connection active on OS level
+                upstream.setTimeout(0);
+                upstream.setNoDelay(true);
+                upstream.setKeepAlive(true, 30000);
 
                 // Flush initial payload
                 if (initialPayload && initialPayload.length > 0) {
@@ -115,7 +114,7 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
                     upstream.write(initialPayload);
                 }
 
-                // Flush any data received during DNS resolution
+                // Flush pending data accumulated during DNS resolution
                 while (pendingWrites.length > 0) {
                     const chunk = pendingWrites.shift();
                     metrics.addBytes(chunk.length);
@@ -129,11 +128,11 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
         );
 
         // Connection timeout protection
-        upstream.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
+        upstream.setTimeout(CONNECT_TIMEOUT_MS, () => {
             if (!connected) {
-                logger.warn('Connector', `Connection to upstream timed out (${UPSTREAM_CONNECT_TIMEOUT_MS}ms)`, {
+                logger.warn('StreamBridge', `Connection timed out (${CONNECT_TIMEOUT_MS}ms)`, {
                     streamId,
-                    code: 'ERR_UPSTREAM_TIMEOUT',
+                    code: 'ERR_CONNECT_TIMEOUT',
                     destination: `${header.targetHost}:${header.targetPort}`
                 });
                 cleanup();
@@ -153,7 +152,7 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
                 checkAndResumeUpstream();
             });
 
-            // Pause upstream reads immediately when client send buffer saturates
+            // Pause upstream reads when client send buffer saturates
             if (ws.bufferedAmount >= HIGH_WATERMARK && !upstreamPaused) {
                 upstreamPaused = true;
                 upstream.pause();
@@ -162,12 +161,12 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
 
         // Upstream Flow Control (Downstream WebSocket -> Upstream TCP)
         upstream.on('drain', () => {
-            // TCP kernel buffer drained — resume reading from WebSocket client socket
+            // TCP buffer drained — resume reading from WebSocket client
             setClientSocketPaused(false);
         });
 
         upstream.on('error', (err) => {
-            logger.error('Connector', `Upstream link error: ${err.message}`, {
+            logger.error('StreamBridge', `Upstream error: ${err.message}`, {
                 streamId,
                 code: 'ERR_UPSTREAM_FAIL',
                 destination: `${header.targetHost}:${header.targetPort}`
@@ -177,14 +176,14 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
         upstream.on('close', cleanup);
     };
 
-    // 2. DNS Rebinding Immunity: Resolve domains and inspect all resolved IPs before connecting
+    // 2. DNS Rebinding Immunity: Resolve domains and verify all IPs before connecting
     if (net.isIP(header.targetHost)) {
-        initiateUpstreamConnection(header.targetHost);
+        initiateConnection(header.targetHost);
     } else {
         dns.lookup(header.targetHost, { all: true, verbatim: true }, (err, addresses) => {
             if (cleaned) return;
             if (err || !addresses || addresses.length === 0) {
-                logger.warn('Connector', `DNS resolution failed for upstream destination: ${header.targetHost}`, {
+                logger.warn('StreamBridge', `DNS resolution failed for: ${header.targetHost}`, {
                     streamId,
                     code: 'ERR_DNS_RESOLUTION',
                     error: err ? err.message : 'No addresses resolved'
@@ -193,7 +192,7 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
                 return;
             }
 
-            // Inspect EVERY resolved IP address against restricted private/metadata ranges
+            // Verify every resolved IP against restricted ranges
             for (const entry of addresses) {
                 const ip = entry.address;
                 const isRestricted = (entry.family === 6 || net.isIPv6(ip))
@@ -201,9 +200,9 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
                     : isRestrictedIPv4(ip);
 
                 if (isRestricted) {
-                    logger.warn('Compliance', `SSRF/DNS Rebinding blocked: Host ${header.targetHost} resolved to restricted IP ${ip}`, {
+                    logger.warn('Compliance', `DNS rebinding blocked: ${header.targetHost} resolved to restricted IP ${ip}`, {
                         streamId,
-                        code: 'ERR_SSRF_BLOCKED',
+                        code: 'ERR_REBINDING_BLOCKED',
                         targetHost: header.targetHost,
                         resolvedIp: ip
                     });
@@ -213,8 +212,8 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
                 }
             }
 
-            // Connect to verified first IP address directly (immune to TOCTOU rebinding races)
-            initiateUpstreamConnection(addresses[0].address);
+            // Connect to verified first IP (immune to TOCTOU rebinding races)
+            initiateConnection(addresses[0].address);
         });
     }
 
@@ -224,7 +223,6 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
     return {
         /**
          * Writes data to the upstream TCP connection with backpressure awareness
-         * Pauses WebSocket receiver if upstream TCP buffer becomes saturated
          * @param {Buffer} data
          * @returns {boolean}
          */
@@ -254,4 +252,4 @@ function createWarehouseLink(ws, header, initialPayload, streamId = 'st-unknown'
     };
 }
 
-module.exports = { createWarehouseLink };
+module.exports = { createStreamBridge };

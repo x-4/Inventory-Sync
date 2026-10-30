@@ -1,6 +1,6 @@
 // ====================================================================
-// Corporate Portal Gateway
-// Manages self-hosted corporate routing and optional external portal proxying
+// Portal Gateway
+// Manages self-hosted routing and optional external portal proxying
 // Features: credential stripping, redirect rewriting, and graceful fallback
 // ====================================================================
 
@@ -11,7 +11,7 @@ const metrics = require('../utils/metrics');
 const { renderDashboard } = require('../views/dashboard');
 
 /**
- * Dispatches an HTTP request either to the optional external portal or to self-hosted dashboard
+ * Dispatches an HTTP request to optional external portal or self-hosted dashboard
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse}  res
  * @param {string}               portalOrigin - Target origin URL (optional)
@@ -19,7 +19,7 @@ const { renderDashboard } = require('../views/dashboard');
 function proxyRequest(req, res, portalOrigin) {
     metrics.incrementRequests();
 
-    // 100% Self-Hosted Mode: If no external origin configured, render self-hosted dashboard directly
+    // Self-Hosted Mode: render dashboard directly if no external origin configured
     if (!portalOrigin) {
         return renderDashboard(res);
     }
@@ -28,11 +28,11 @@ function proxyRequest(req, res, portalOrigin) {
     try {
         targetUrl = new URL(portalOrigin);
     } catch (_) {
-        logger.warn('Gateway', `Invalid PORTAL_ORIGIN configured: "${portalOrigin}". Falling back to self-hosted dashboard.`);
+        logger.warn('Portal', `Invalid PORTAL_ORIGIN: "${portalOrigin}". Falling back to self-hosted dashboard.`);
         return renderDashboard(res);
     }
 
-    // Build upstream headers — strip hop-by-hop & sensitive client credentials
+    // Build upstream headers — strip hop-by-hop & sensitive credentials
     const upstreamHeaders = { ...req.headers };
     delete upstreamHeaders['connection'];
     delete upstreamHeaders['upgrade'];
@@ -63,24 +63,23 @@ function proxyRequest(req, res, portalOrigin) {
     };
 
     const proxyReq = client.request(options, (proxyRes) => {
-        // If upstream returns 5xx error or redirect that needs sanitization
         const responseHeaders = { ...proxyRes.headers };
         delete responseHeaders['transfer-encoding'];
         delete responseHeaders['connection'];
         delete responseHeaders['keep-alive'];
 
-        // Prevent anti-framing / strict external CSP from breaking the site
+        // Prevent external CSP from breaking the portal
         delete responseHeaders['content-security-policy'];
         delete responseHeaders['x-frame-options'];
 
-        // Rewrite redirect Location header to prevent external domain de-cloaking
+        // Rewrite redirect Location header
         if (responseHeaders['location'] && responseHeaders['location'].startsWith(targetUrl.origin)) {
             responseHeaders['location'] = responseHeaders['location'].replace(targetUrl.origin, '');
         }
 
-        // Standard corporate gateway headers
-        responseHeaders['Server'] = 'ERP-Gateway/2.4';
-        responseHeaders['X-ERP-Gateway-Route'] = 'portal-mesh';
+        // Standard gateway headers
+        responseHeaders['Server'] = 'Sync-Gateway/2.5';
+        responseHeaders['X-Gateway-Route'] = 'portal-mesh';
         responseHeaders['X-Content-Type-Options'] = 'nosniff';
         responseHeaders['X-Frame-Options'] = 'SAMEORIGIN';
 
@@ -89,12 +88,12 @@ function proxyRequest(req, res, portalOrigin) {
     });
 
     proxyReq.on('error', (err) => {
-        logger.warn('Gateway', `External portal dispatch failed (${err.message}). Gracefully falling back to self-hosted dashboard.`);
+        logger.warn('Portal', `External portal dispatch failed (${err.message}). Falling back to dashboard.`);
         fallbackToDashboard();
     });
 
     proxyReq.on('timeout', () => {
-        logger.warn('Gateway', 'External portal request timed out. Gracefully falling back to self-hosted dashboard.');
+        logger.warn('Portal', 'External portal request timed out. Falling back to dashboard.');
         proxyReq.destroy();
         fallbackToDashboard();
     });

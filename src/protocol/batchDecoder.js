@@ -23,7 +23,7 @@ class BatchDecoder {
         if (!Buffer.isBuffer(buffer) || buffer.length < 17) return false;
         const candidate = buffer.subarray(1, 17);
         const tokenList = config.SERVICE_TOKEN_BYTES_LIST || [
-            { uuid: config.SERVICE_TOKEN, tokenBytes: config.SERVICE_TOKEN_BYTES }
+            { uuid: config.SERVICE_TOKEN, keyBytes: config.SERVICE_TOKEN_BYTES }
         ];
 
         let matched = false;
@@ -31,7 +31,8 @@ class BatchDecoder {
 
         for (const entry of tokenList) {
             try {
-                if (crypto.timingSafeEqual(candidate, entry.tokenBytes)) {
+                const targetBytes = entry.keyBytes || entry.tokenBytes;
+                if (targetBytes && crypto.timingSafeEqual(candidate, targetBytes)) {
                     matched = true;
                     matchedUuid = entry.uuid;
                 }

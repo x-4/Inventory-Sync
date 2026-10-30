@@ -1,13 +1,13 @@
 // ====================================================================
-// Telemetry Aggregator & SWR / Singleflight Unit Tests
+// Datagram Processor & SWR / Singleflight Unit Tests
 // ====================================================================
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { AnalyticsCache, purgeAnalyticsCache } = require('../src/services/telemetryAggregator');
+const { ResponseCache, purgeResponseCache } = require('../src/services/datagramProcessor');
 
-test('TelemetryCache: Standard LRU storage and retrieval within TTL', () => {
-    const cache = new AnalyticsCache(10, 1000); // 1s TTL
+test('ResponseCache: Standard LRU storage and retrieval within TTL', () => {
+    const cache = new ResponseCache(10, 1000); // 1s TTL
     const payload = Buffer.from('query_result_sample');
     cache.set('key1', payload);
 
@@ -17,8 +17,8 @@ test('TelemetryCache: Standard LRU storage and retrieval within TTL', () => {
     assert.equal(hit.isStale, false);
 });
 
-test('TelemetryCache: SWR awareness yields stale data between 1x and 2x TTL', async () => {
-    const cache = new AnalyticsCache(10, 50); // 50ms TTL
+test('ResponseCache: SWR awareness yields stale data between 1x and 2x TTL', async () => {
+    const cache = new ResponseCache(10, 50); // 50ms TTL
     const payload = Buffer.from('sample_stale_data');
     cache.set('stale_key', payload);
 
@@ -31,8 +31,8 @@ test('TelemetryCache: SWR awareness yields stale data between 1x and 2x TTL', as
     assert.equal(result.isStale, true, 'Result must be flagged as stale');
 });
 
-test('TelemetryCache: Hard expiration purges data beyond 2x TTL', async () => {
-    const cache = new AnalyticsCache(10, 30); // 30ms TTL
+test('ResponseCache: Hard expiration purges data beyond 2x TTL', async () => {
+    const cache = new ResponseCache(10, 30); // 30ms TTL
     cache.set('exp_key', Buffer.from('expired'));
 
     // Wait 70ms (> 2x TTL)
@@ -42,8 +42,8 @@ test('TelemetryCache: Hard expiration purges data beyond 2x TTL', async () => {
     assert.equal(result, null, 'Cache must return null beyond 2x TTL');
 });
 
-test('TelemetryCache: Clear purges all active entries', () => {
-    const cache = new AnalyticsCache(10, 10000);
+test('ResponseCache: Clear purges all active entries', () => {
+    const cache = new ResponseCache(10, 10000);
     cache.set('k1', Buffer.from('v1'));
     cache.set('k2', Buffer.from('v2'));
     assert.equal(cache.clear(), 2);

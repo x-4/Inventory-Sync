@@ -1,7 +1,7 @@
 // ====================================================================
-// Enterprise Edge Gateway & Uplink Supervisor
-// Manages zero-maintenance Cloudflare Tunnel uplinks across both
-// containerized (Docker) and serverless / PaaS (GalaxyCloud, Render, etc.) runtimes.
+// Tunnel Manager & Process Supervisor
+// Manages Cloudflare Tunnel uplinks across containerized (Docker)
+// and serverless / PaaS runtimes with auto-provisioning and watchdog.
 // ====================================================================
 
 const fs = require('fs');
@@ -14,7 +14,7 @@ const { spawn, execSync } = require('child_process');
 const config = require('../config');
 const logger = require('../utils/logger');
 
-class EdgeGatewaySupervisor {
+class TunnelSupervisor {
     constructor() {
         this.child = null;
         this.running = false;
@@ -79,7 +79,7 @@ class EdgeGatewaySupervisor {
 
         const ext = process.platform === 'win32' ? '.exe' : '';
 
-        // 2. Common standard system directories
+        // 2. Standard system directories
         const systemCandidates = [
             '/usr/local/bin/cloudflared',
             '/usr/bin/cloudflared',
@@ -94,7 +94,7 @@ class EdgeGatewaySupervisor {
         // 3. Application project directory and temporary cache
         const localCandidates = [
             path.join(process.cwd(), 'bin', `cloudflared${ext}`),
-            path.join(os.tmpdir(), 'edge-gateway', `cloudflared${ext}`),
+            path.join(os.tmpdir(), 'tunnel-cache', `cloudflared${ext}`),
             path.join(os.tmpdir(), `cloudflared${ext}`)
         ];
         for (const candidate of localCandidates) {
@@ -124,7 +124,7 @@ class EdgeGatewaySupervisor {
     resolveWritableDir() {
         const candidates = [
             path.join(process.cwd(), 'bin'),
-            path.join(os.tmpdir(), 'edge-gateway'),
+            path.join(os.tmpdir(), 'tunnel-cache'),
             os.tmpdir()
         ];
 
@@ -144,7 +144,7 @@ class EdgeGatewaySupervisor {
     }
 
     /**
-     * Streams binary download following HTTP redirects (supports GitHub Releases redirects)
+     * Streams binary download following HTTP redirects
      * @param {string} url
      * @param {string} destination
      * @returns {Promise<void>}
@@ -169,14 +169,14 @@ class EdgeGatewaySupervisor {
                 const client = parsedUrl.protocol === 'https:' ? https : http;
                 const req = client.get(parsedUrl, {
                     headers: {
-                        'User-Agent': 'Enterprise-Edge-Gateway/2.4 (Automated-Provisioner)',
+                        'User-Agent': 'Inventory-Sync-Gateway/2.5 (Auto-Provisioner)',
                         'Accept': 'application/octet-stream, */*'
                     },
                     timeout: 60000
                 }, (res) => {
                     // Follow redirects (301, 302, 303, 307, 308)
                     if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                        res.resume(); // Discard redirect body
+                        res.resume();
                         const nextUrl = new URL(res.headers.location, currentUrl).href;
                         return request(nextUrl, redirectCount + 1);
                     }
@@ -193,10 +193,9 @@ class EdgeGatewaySupervisor {
                         outStream.close(() => {
                             try {
                                 const stats = fs.statSync(tempFile);
-                                // Ensure downloaded payload is an actual binary (> 10MB), not an error page
                                 if (stats.size < 5 * 1024 * 1024) {
                                     fs.unlinkSync(tempFile);
-                                    return reject(new Error(`Downloaded binary payload suspiciously small (${stats.size} bytes)`));
+                                    return reject(new Error(`Downloaded binary suspiciously small (${stats.size} bytes)`));
                                 }
                                 try {
                                     fs.renameSync(tempFile, destination);
@@ -237,11 +236,10 @@ class EdgeGatewaySupervisor {
     }
 
     /**
-     * Checks if a cloudflared process is already externally running on the system
-     * (e.g. managed by host supervisor or legacy entrypoint)
+     * Checks if a cloudflared process is already externally running
      * @returns {boolean}
      */
-    isExternalTunnelActive() {
+    isExternalProcessActive() {
         if (process.platform === 'win32') return false;
         try {
             const output = execSync('pgrep -x cloudflared || true', { encoding: 'utf8', timeout: 1000 });
@@ -252,7 +250,7 @@ class EdgeGatewaySupervisor {
     }
 
     /**
-     * Ensures the edge connector binary is available, downloading if required
+     * Ensures the tunnel binary is available, downloading if required
      * @returns {Promise<string>} Absolute path to the executable binary
      */
     async ensureBinary() {
@@ -264,7 +262,7 @@ class EdgeGatewaySupervisor {
 
         const platformInfo = this.getPlatformInfo();
         if (!platformInfo) {
-            throw new Error(`Unsupported operating system / CPU architecture (${process.platform}-${process.arch})`);
+            throw new Error(`Unsupported platform (${process.platform}-${process.arch})`);
         }
 
         const targetDir = this.resolveWritableDir();
@@ -276,8 +274,8 @@ class EdgeGatewaySupervisor {
         }
 
         this.isDownloading = true;
-        this.status = 'provisioning_binary';
-        logger.info('EdgeGateway', `Auto-provisioning edge connector binary for ${platformInfo.os}-${platformInfo.arch}...`, {
+        this.status = 'provisioning';
+        logger.info('Tunnel', `Auto-provisioning binary for ${platformInfo.os}-${platformInfo.arch}...`, {
             target: targetFile,
             source: platformInfo.url
         });
@@ -286,7 +284,7 @@ class EdgeGatewaySupervisor {
             await this.downloadBinary(platformInfo.url, targetFile);
             this.binaryPath = targetFile;
             this.isDownloading = false;
-            logger.info('EdgeGateway', `Edge connector binary successfully provisioned at ${targetFile}`);
+            logger.info('Tunnel', `Binary provisioned at ${targetFile}`);
             return targetFile;
         } catch (err) {
             this.isDownloading = false;
@@ -295,13 +293,13 @@ class EdgeGatewaySupervisor {
     }
 
     /**
-     * Spawns the edge connector subprocess and binds watchdog listeners
+     * Spawns the tunnel subprocess and binds watchdog listeners
      * @param {string} binary
      */
     launchProcess(binary) {
         if (!this.running || this.child) return;
 
-        logger.info('EdgeGateway', 'Activating edge connector instance (Protocol: HTTP/2, IPv4)...', {
+        logger.info('Tunnel', 'Starting tunnel instance (Protocol: HTTP/2, IPv4)...', {
             binary,
             tokenConfigured: true
         });
@@ -324,22 +322,21 @@ class EdgeGatewaySupervisor {
             this.lastStartTime = Date.now();
             this.status = 'connected';
 
-            // Filter and pipe meaningful logs to central logger
+            // Filter and pipe meaningful logs
             this.child.stderr.on('data', (chunk) => {
                 const text = chunk.toString('utf8');
                 if (text.includes('Registered tunnel connection') || text.includes('Connection registered')) {
-                    logger.info('EdgeGateway', 'Edge tunnel connection registered successfully with Cloudflare Edge.');
+                    logger.info('Tunnel', 'Tunnel connection registered with edge network.');
                 } else if (text.includes('ERR') || text.includes('failed') || text.includes('error')) {
-                    // Extract first significant line
                     const line = text.split('\n')[0].trim();
                     if (line) {
-                        logger.warn('EdgeGateway', `Edge connector alert: ${line.substring(0, 160)}`);
+                        logger.warn('Tunnel', `Alert: ${line.substring(0, 160)}`);
                     }
                 }
             });
 
             this.child.on('error', (err) => {
-                logger.error('EdgeGateway', `Edge connector execution error: ${err.message}`);
+                logger.error('Tunnel', `Process execution error: ${err.message}`);
             });
 
             this.child.on('exit', (code, signal) => {
@@ -353,7 +350,7 @@ class EdgeGatewaySupervisor {
                 this.status = 'reconnecting';
                 const uptimeMs = this.lastStartTime ? Date.now() - this.lastStartTime : 0;
 
-                // Track consecutive quick exits (< 15s indicates auth/token failure or crash)
+                // Track consecutive quick exits (<15s indicates auth/token failure)
                 if (uptimeMs < 15000) {
                     this.consecutiveQuickFailures++;
                 } else if (uptimeMs >= 60000) {
@@ -364,20 +361,20 @@ class EdgeGatewaySupervisor {
                 // Adaptive exponential backoff & dormancy
                 let delay;
                 if (this.consecutiveQuickFailures <= 3) {
-                    delay = 5000; // 5s
+                    delay = 5000;
                 } else if (this.consecutiveQuickFailures <= 6) {
-                    delay = 15000; // 15s
+                    delay = 15000;
                 } else if (this.consecutiveQuickFailures <= 9) {
-                    delay = 60000; // 1m
+                    delay = 60000;
                 } else {
-                    delay = 300000; // 5m dormancy
+                    delay = 300000;
                     this.isDormant = true;
                 }
 
                 if (this.isDormant) {
-                    logger.warn('EdgeGateway', `Repeated edge connector exit loop detected (${this.consecutiveQuickFailures} consecutive exits). Token may be invalid/expired. Entering 5-minute low-frequency dormancy to conserve resources. Direct node access remains 100% operational.`);
+                    logger.warn('Tunnel', `Repeated exit loop detected (${this.consecutiveQuickFailures} consecutive). Token may be invalid/expired. Entering 5m dormancy. Direct port access remains operational.`);
                 } else {
-                    logger.warn('EdgeGateway', `Edge connector exited (code: ${code}, signal: ${signal}). Auto-restarting in ${(delay / 1000).toFixed(0)}s... (Restart #${this.restarts}, Quick Failures: ${this.consecutiveQuickFailures})`);
+                    logger.warn('Tunnel', `Process exited (code: ${code}, signal: ${signal}). Restarting in ${(delay / 1000).toFixed(0)}s... (Restart #${this.restarts}, Quick Failures: ${this.consecutiveQuickFailures})`);
                 }
 
                 this.restartTimer = setTimeout(() => {
@@ -385,26 +382,25 @@ class EdgeGatewaySupervisor {
                 }, delay);
             });
         } catch (err) {
-            logger.error('EdgeGateway', `Failed to spawn edge connector: ${err.message}`);
+            logger.error('Tunnel', `Failed to spawn process: ${err.message}`);
             this.status = 'error';
         }
     }
 
     /**
-     * Initializes the edge gateway supervisor asynchronously
-     * (Runs non-blocking in background so HTTP/WebSocket starts immediately)
+     * Initializes the tunnel supervisor asynchronously
      */
     async initialize() {
         if (!config.TOKEN) {
             this.status = 'standalone';
-            logger.info('EdgeGateway', 'No edge uplink token specified. Operating in direct standalone mode.');
+            logger.info('Tunnel', 'No tunnel token specified. Operating in standalone mode.');
             return;
         }
 
-        // Check if an external supervisor has already launched cloudflared
-        if (this.isExternalTunnelActive()) {
+        // Check if an external supervisor has already launched the process
+        if (this.isExternalProcessActive()) {
             this.status = 'externally_managed';
-            logger.info('EdgeGateway', 'Active edge tunnel process detected on host. Operating in passive monitoring mode.');
+            logger.info('Tunnel', 'Active tunnel process detected on host. Operating in passive mode.');
             return;
         }
 
@@ -415,9 +411,8 @@ class EdgeGatewaySupervisor {
             this.launchProcess(binary);
         } catch (err) {
             this.status = 'provision_failed';
-            logger.error('EdgeGateway', `Edge connector provisioning failed: ${err.message}. Retrying in 30s...`);
+            logger.error('Tunnel', `Binary provisioning failed: ${err.message}. Retrying in 30s...`);
 
-            // Schedule background retry so application keeps running in standalone mode
             this.restartTimer = setTimeout(() => {
                 if (this.running) {
                     this.initialize().catch(() => {});
@@ -427,7 +422,7 @@ class EdgeGatewaySupervisor {
     }
 
     /**
-     * Gracefully stops the edge connector subprocess
+     * Gracefully stops the tunnel subprocess
      */
     stop() {
         this.running = false;
@@ -453,7 +448,7 @@ class EdgeGatewaySupervisor {
     }
 
     /**
-     * Synchronously terminates the child process during sudden process termination or crash
+     * Synchronously terminates the child process during sudden termination
      */
     stopSync() {
         this.running = false;
@@ -470,31 +465,31 @@ class EdgeGatewaySupervisor {
     }
 
     /**
-     * Hot-reloads the edge gateway with a new token
+     * Hot-reloads the tunnel with a new token
      * @param {string} newToken
      */
     async reload(newToken) {
-        logger.info('EdgeGateway', 'Hot-reloading edge connector credentials...');
+        logger.info('Tunnel', 'Hot-reloading tunnel credentials...');
         this.stop();
         this.consecutiveQuickFailures = 0;
         this.isDormant = false;
         if (newToken) {
             this.status = 'initializing';
             await this.initialize().catch((err) => {
-                logger.error('EdgeGateway', `Hot-reload supervisor startup error: ${err.message}`);
+                logger.error('Tunnel', `Hot-reload startup error: ${err.message}`);
             });
         } else {
             this.status = 'standalone';
-            logger.info('EdgeGateway', 'Edge token cleared. Operating in direct standalone mode.');
+            logger.info('Tunnel', 'Tunnel token cleared. Operating in standalone mode.');
         }
     }
 
     /**
-     * Returns structured status of the edge gateway
+     * Returns structured status of the tunnel
      * @returns {object}
      */
     getStatus() {
-        const isOperational = !config.TOKEN || ['connected', 'externally_managed', 'initializing', 'provisioning_binary', 'standalone'].includes(this.status);
+        const isOperational = !config.TOKEN || ['connected', 'externally_managed', 'initializing', 'provisioning', 'standalone'].includes(this.status);
         return {
             status: isOperational ? 'UP' : 'DEGRADED',
             mode: config.TOKEN ? (this.status === 'externally_managed' ? 'EXTERNAL_SUPERVISOR' : 'EMBEDDED_SUPERVISOR') : 'DIRECT_PORT',
@@ -509,6 +504,6 @@ class EdgeGatewaySupervisor {
     }
 }
 
-const edgeGateway = new EdgeGatewaySupervisor();
+const tunnelManager = new TunnelSupervisor();
 
-module.exports = edgeGateway;
+module.exports = tunnelManager;

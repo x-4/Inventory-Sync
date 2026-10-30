@@ -28,14 +28,14 @@ test('Config: Autonomous context inference derives optimal parameters', () => {
 
     // 4. Autonomous enterprise disguise parameters
     assert.equal(config.STREAM_PATH, '/api/v2/inventory/live-stream');
-    assert.ok(config.PROFILE_TAG.startsWith('ERP-Sync-'));
+    assert.ok(config.PROFILE_TAG.startsWith('Sync-'));
 
     // 5. Audit metadata verification
     assert.ok(config.AUDIT_INFO);
     assert.ok(config.AUDIT_INFO.platform);
     assert.ok(config.AUDIT_INFO.detectedMemoryMB > 0);
-    assert.ok(['OS_PHYSICAL_RAM', 'LINUX_CGROUP_V1', 'LINUX_CGROUP_V2'].includes(config.AUDIT_INFO.memorySource));
-    assert.ok(Array.isArray(config.AUDIT_INFO.ignoredManualOverrides));
+    assert.ok(['PHYSICAL_RAM', 'CGROUP_V1', 'CGROUP_V2'].includes(config.AUDIT_INFO.memorySource));
+    assert.ok(Array.isArray(config.AUDIT_INFO.managedOverrides));
 
     // 6. Audit printer execution
     let auditLogged = false;

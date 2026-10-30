@@ -1,5 +1,5 @@
 // ====================================================================
-// Enterprise Device Synchronization Profile Controller
+// Device Profile Controller
 // Manages device configuration provisioning descriptors
 // ====================================================================
 
@@ -9,19 +9,19 @@ const metrics = require('../utils/metrics');
 const { resolvePublicIngress } = require('../utils/ingressResolver');
 
 /**
- * Injects standardized enterprise security headers and distributed trace ID
+ * Injects standardized security headers and distributed trace ID
  * @param {http.ServerResponse} res
  * @param {object}              extraHeaders
  */
 function applySecurityHeaders(res, extraHeaders = {}) {
     const traceId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
     const headers = {
-        'Server': 'ERP-Gateway/2.4',
+        'Server': 'Sync-Gateway/2.5',
         'X-Content-Type-Options': 'nosniff',
         'X-Frame-Options': 'SAMEORIGIN',
         'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
         'X-Request-Id': traceId,
-        'X-ERP-Route': 'mesh-gateway',
+        'X-Gateway-Route': 'stream-mesh',
         ...extraHeaders
     };
     for (const [key, value] of Object.entries(headers)) {
@@ -31,7 +31,6 @@ function applySecurityHeaders(res, extraHeaders = {}) {
 
 /**
  * Handles device provisioning profile requests
- * Always returns standardized enterprise device provisioning JSON descriptor
  *
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse}  res
@@ -56,19 +55,19 @@ function handleProfileRequest(req, res) {
         status: 'PROVISIONED',
         service: config.SERVICE_NAME,
         version: config.VERSION,
-        terminalId: `PDA-TERMINAL-${deviceFingerprint}`,
+        terminalId: `DEVICE-${deviceFingerprint}`,
         channel: {
             mode: 'SECURE_STREAM_V2',
             transport: 'WebSocket+TLS',
             gatewayHost: host,
             streamPath: config.STREAM_PATH,
             heartbeatIntervalMs: 30000,
-            reconciliationQueue: 'fifo-partition-01'
+            queue: 'fifo-partition-01'
         },
         license: {
             state: 'ACTIVE',
-            type: 'ENTERPRISE_EDGE_SYNC',
-            tier: 'TIER-1-UNLIMITED',
+            type: 'SYNC_GATEWAY',
+            tier: 'TIER-1',
             expiresAt: '2028-12-31T23:59:59Z'
         },
         auditTimestamp: new Date().toISOString()

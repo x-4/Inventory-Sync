@@ -1,7 +1,7 @@
 {
-    "name": "aether-node",
-    "version": "2.4.0",
-    "description": "Enterprise Inventory Real-time Synchronization Microservice",
+    "name": "inventory-sync-gateway",
+    "version": "2.5.0",
+    "description": "Enterprise Inventory Real-time Synchronization Gateway",
     "main": "src/server.js",
     "scripts": {
         "start": "node src/server.js",

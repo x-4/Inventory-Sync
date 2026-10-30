@@ -1,5 +1,5 @@
 [Unit]
-Description=Enterprise Inventory Real-Time Synchronization Microservice
+Description=Inventory Sync Gateway Microservice
 Documentation=https://github.com/x-4/Inventory-Sync
 After=network.target network-online.target
 Wants=network-online.target
@@ -7,9 +7,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/enterprise-inventory-sync
+WorkingDirectory=/opt/inventory-sync-gateway
 Environment=NODE_ENV=production
-EnvironmentFile=-/opt/enterprise-inventory-sync/.env
+EnvironmentFile=-/opt/inventory-sync-gateway/.env
 ExecStart=/usr/bin/node src/server.js
 Restart=always
 RestartSec=3s

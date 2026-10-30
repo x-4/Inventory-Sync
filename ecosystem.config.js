@@ -1,12 +1,12 @@
 // ====================================================================
-// Enterprise Microservice Ecosystem Configuration (PM2 Supervisor)
-// Autonomous context inference derives all ports, memory quotas, and thread pools.
-// Strictly accepts UUID and TOKEN.
+// PM2 Ecosystem Configuration
+// Runtime context engine derives all ports, memory quotas, and thread pools.
+// Accepts only UUID and TOKEN.
 // ====================================================================
 
 module.exports = {
     apps: [{
-        name: 'enterprise-inventory-sync',
+        name: 'inventory-sync-gateway',
         script: 'src/server.js',
         instances: 1,
         exec_mode: 'fork',

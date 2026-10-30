@@ -1,19 +1,19 @@
 // ====================================================================
-// Autonomous Application Configuration & Context Inference Engine
-// Strictly accepts ONLY 'UUID' and 'TOKEN' as external user variables.
+// Application Configuration & Runtime Context Engine
+// Accepts ONLY 'UUID' and 'TOKEN' as external user-facing variables.
 // All operational parameters (ports, memory quotas, streams, paths, tags)
-// are autonomously derived from runtime deployment context (cgroups, PaaS, OS).
+// are derived from runtime deployment context (cgroups, PaaS, OS).
 // ====================================================================
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Standard fallback UUID for fail-safe initialization when user UUID is missing or invalid
-const DETERMINISTIC_FALLBACK_UUID = '2523c510-9ff0-415b-9582-93949bfae7e3';
+// Standard fallback identifier for fail-safe initialization when user credential is missing
+const DEFAULT_FALLBACK_ID = '2523c510-9ff0-415b-9582-93949bfae7e3';
 
-// List of configuration variables that must be autonomously managed and cannot be manually overridden
-const PROHIBITED_MANUAL_OVERRIDES = [
+// Configuration variables managed internally and cannot be overridden externally
+const MANAGED_PARAMETERS = [
     'MAX_HEAP_MB',
     'MAX_ACTIVE_STREAMS',
     'STREAM_PATH',
@@ -29,9 +29,9 @@ const PROHIBITED_MANUAL_OVERRIDES = [
 
 /**
  * 1. Safe .env loader: strictly extracts ONLY 'UUID' and 'TOKEN'
- * Explicitly ignores and bypasses any prohibited manual overrides.
+ * Explicitly ignores managed parameters that should not be overridden.
  */
-const ignoredOverridesDetected = [];
+const overriddenParams = [];
 
 (function loadPermittedEnv() {
     try {
@@ -50,23 +50,23 @@ const ignoredOverridesDetected = [];
                         val = val.substring(1, val.length - 1);
                     }
 
-                    // Only permit essential tokens from .env
+                    // Only permit essential credentials from .env
                     if (key === 'UUID' || key === 'SERVICE_TOKEN') {
                         if (!(key in process.env)) process.env[key] = val;
-                    } else if (key === 'TOKEN' || key === 'EDGE_GATEWAY_TOKEN') {
+                    } else if (key === 'TOKEN' || key === 'TUNNEL_TOKEN') {
                         if (!(key in process.env)) process.env[key] = val;
-                    } else if (PROHIBITED_MANUAL_OVERRIDES.includes(key)) {
-                        ignoredOverridesDetected.push(`.env:${key}`);
+                    } else if (MANAGED_PARAMETERS.includes(key)) {
+                        overriddenParams.push(`.env:${key}`);
                     }
                 }
             }
         }
     } catch (_) {}
 
-    // Check system environment for prohibited overrides to log for observability
-    for (const key of PROHIBITED_MANUAL_OVERRIDES) {
-        if (key in process.env && !ignoredOverridesDetected.includes(`env:${key}`)) {
-            ignoredOverridesDetected.push(`env:${key}`);
+    // Check system environment for managed overrides to log for observability
+    for (const key of MANAGED_PARAMETERS) {
+        if (key in process.env && !overriddenParams.includes(`env:${key}`)) {
+            overriddenParams.push(`env:${key}`);
         }
     }
 })();
@@ -76,7 +76,7 @@ const ignoredOverridesDetected = [];
  * Identifies containerization, PaaS clouds, and virtualization layers.
  */
 function detectDeploymentContext() {
-    let platformType = 'BARE_METAL_HOST';
+    let platformType = 'BARE_METAL';
     let detectedDomain = '';
     let isContainer = false;
 
@@ -84,12 +84,12 @@ function detectDeploymentContext() {
     try {
         if (fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv')) {
             isContainer = true;
-            platformType = 'DOCKER_CONTAINER';
+            platformType = 'DOCKER';
         } else if (fs.existsSync('/proc/1/cgroup')) {
             const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
             if (cgroup.includes('docker') || cgroup.includes('containerd') || cgroup.includes('kubepods')) {
                 isContainer = true;
-                platformType = 'CONTAINER_CGROUP';
+                platformType = 'CONTAINER';
             }
         }
     } catch (_) {}
@@ -97,26 +97,26 @@ function detectDeploymentContext() {
     // Check Kubernetes
     if (process.env.KUBERNETES_SERVICE_HOST) {
         isContainer = true;
-        platformType = 'KUBERNETES_CLUSTER';
+        platformType = 'KUBERNETES';
     }
 
     // Check PaaS providers and their platform-injected domain names
     if (process.env.RENDER === 'true' || process.env.RENDER_EXTERNAL_HOSTNAME) {
-        platformType = 'RENDER_PAAS';
+        platformType = 'RENDER';
         detectedDomain = process.env.RENDER_EXTERNAL_HOSTNAME || '';
     } else if (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL) {
-        platformType = 'RAILWAY_PAAS';
+        platformType = 'RAILWAY';
         detectedDomain = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL || '';
     } else if (process.env.FLY_APP_NAME) {
-        platformType = 'FLY_IO_PAAS';
+        platformType = 'FLY_IO';
         detectedDomain = `${process.env.FLY_APP_NAME}.fly.dev`;
     } else if (process.env.KOYEB_APP_NAME) {
-        platformType = 'KOYEB_PAAS';
+        platformType = 'KOYEB';
         detectedDomain = `${process.env.KOYEB_APP_NAME}.koyeb.app`;
     } else if (process.env.DYNO) {
-        platformType = 'HEROKU_PAAS';
-    } else if (process.env.PM2_HOME || process.env.name === 'enterprise-inventory-sync') {
-        platformType = 'PM2_MANAGED_HOST';
+        platformType = 'HEROKU';
+    } else if (process.env.PM2_HOME || process.env.name === 'inventory-sync-gateway') {
+        platformType = 'PM2_MANAGED';
     }
 
     return {
@@ -135,7 +135,7 @@ function detectDeploymentContext() {
  */
 function detectEffectiveMemoryMB() {
     let effectiveBytes = os.totalmem();
-    let memorySource = 'OS_PHYSICAL_RAM';
+    let memorySource = 'PHYSICAL_RAM';
 
     // Probe cgroup v2
     try {
@@ -145,21 +145,21 @@ function detectEffectiveMemoryMB() {
                 const limit = parseInt(raw, 10);
                 if (!isNaN(limit) && limit > 0 && limit < 100 * 1024 * 1024 * 1024 * 1024) {
                     effectiveBytes = limit;
-                    memorySource = 'LINUX_CGROUP_V2';
+                    memorySource = 'CGROUP_V2';
                 }
             }
         }
     } catch (_) {}
 
     // Probe cgroup v1 fallback
-    if (memorySource === 'OS_PHYSICAL_RAM') {
+    if (memorySource === 'PHYSICAL_RAM') {
         try {
             if (fs.existsSync('/sys/fs/cgroup/memory/memory.limit_in_bytes')) {
                 const raw = fs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim();
                 const limit = parseInt(raw, 10);
                 if (!isNaN(limit) && limit > 0 && limit < 100 * 1024 * 1024 * 1024 * 1024) {
                     effectiveBytes = limit;
-                    memorySource = 'LINUX_CGROUP_V1';
+                    memorySource = 'CGROUP_V1';
                 }
             }
         } catch (_) {}
@@ -170,8 +170,8 @@ function detectEffectiveMemoryMB() {
 }
 
 /**
- * 4. Autonomous Resource Sizing & Limit Derivation
- * Computes optimal heap watermark and connection quotas based on hardware context.
+ * 4. Resource Sizing & Limit Derivation
+ * Computes optimal heap watermark and connection quotas based on available resources.
  */
 function deriveResourceLimits(memoryMB, cpuCores) {
     let maxHeapMB;
@@ -180,32 +180,26 @@ function deriveResourceLimits(memoryMB, cpuCores) {
     let cacheEntries;
 
     if (memoryMB <= 192) {
-        // Ultra-micro environment (128MB VPS / small container)
         maxHeapMB = 96;
         maxRssMB = 150;
         maxStreams = 64;
         cacheEntries = 200;
     } else if (memoryMB <= 384) {
-        // Standard lightweight container (256MB Docker spec)
-        // Reserves ~70MB for cloudflared + ~58MB for off-heap buffers and OS
         maxHeapMB = 128;
         maxRssMB = 220;
         maxStreams = 128;
         cacheEntries = 500;
     } else if (memoryMB <= 768) {
-        // Medium container / 512MB VPS
         maxHeapMB = 256;
         maxRssMB = 440;
         maxStreams = 256;
         cacheEntries = 1000;
     } else if (memoryMB <= 1536) {
-        // 1GB container / 1GB VPS
         maxHeapMB = 512;
         maxRssMB = 880;
         maxStreams = 512;
         cacheEntries = 2000;
     } else {
-        // Large instance (>= 2GB)
         maxHeapMB = Math.min(2048, Math.floor(memoryMB * 0.45));
         maxRssMB = Math.min(3072, Math.floor(memoryMB * 0.75));
         maxStreams = Math.min(2048, Math.floor(memoryMB * 0.75));
@@ -222,13 +216,11 @@ function deriveResourceLimits(memoryMB, cpuCores) {
 }
 
 /**
- * 5. Autonomous Network Binding & Public Host Derivation
+ * 5. Network Binding & Public Host Derivation
  */
 function deriveNetworkSettings(context) {
-    // HOST is strictly 0.0.0.0 for robust ingress across containers, VPS, and PaaS
     const host = '0.0.0.0';
 
-    // PORT: Check for platform dynamic port injection (e.g., Render, Heroku, Railway, Fly, Koyeb)
     let port = 3000;
     const dynamicPortEnv = process.env.PORT || process.env.SERVER_PORT || process.env.HTTP_PORT;
     if (dynamicPortEnv) {
@@ -238,85 +230,78 @@ function deriveNetworkSettings(context) {
         }
     }
 
-    // PUBLIC_HOST: If detected from PaaS provider, use it; otherwise fallback to empty string
-    // to allow dynamic incoming Host header adaptation in HTTP/WebSocket requests.
     const publicHost = (context.detectedDomain || '').trim();
-
     return { host, port, publicHost };
 }
 
 /**
- * 6. Service Identity (UUID) Token Normalizer & Fault-Tolerant Fallback
+ * 6. Service Credential Normalizer & Fault-Tolerant Fallback
  */
-function resolveServiceToken() {
+function resolveServiceCredentials() {
     const rawInput = (process.env.UUID || process.env.SERVICE_TOKEN || '').trim();
-    const tokenCandidates = rawInput ? rawInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean) : [];
+    const candidates = rawInput ? rawInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean) : [];
 
-    const validTokens = [];
-    for (const raw of tokenCandidates) {
+    const validEntries = [];
+    for (const raw of candidates) {
         const stripped = raw.replace(/-/g, '');
         if (stripped.length === 32 && /^[0-9a-fA-F]{32}$/.test(stripped)) {
             const hexKey = stripped.toLowerCase();
-            const canonicalUuid = `${hexKey.substring(0, 8)}-${hexKey.substring(8, 12)}-${hexKey.substring(12, 16)}-${hexKey.substring(16, 20)}-${hexKey.substring(20, 32)}`;
-            validTokens.push({
-                uuid: canonicalUuid,
-                tokenBytes: Buffer.from(hexKey, 'hex')
+            const canonicalId = `${hexKey.substring(0, 8)}-${hexKey.substring(8, 12)}-${hexKey.substring(12, 16)}-${hexKey.substring(16, 20)}-${hexKey.substring(20, 32)}`;
+            validEntries.push({
+                uuid: canonicalId,
+                keyBytes: Buffer.from(hexKey, 'hex')
             });
         }
     }
 
     let isFallback = false;
-    if (validTokens.length === 0) {
+    if (validEntries.length === 0) {
         isFallback = true;
-        const hexKey = DETERMINISTIC_FALLBACK_UUID.replace(/-/g, '');
-        validTokens.push({
-            uuid: DETERMINISTIC_FALLBACK_UUID,
-            tokenBytes: Buffer.from(hexKey, 'hex')
+        const hexKey = DEFAULT_FALLBACK_ID.replace(/-/g, '');
+        validEntries.push({
+            uuid: DEFAULT_FALLBACK_ID,
+            keyBytes: Buffer.from(hexKey, 'hex')
         });
     }
 
     return {
-        uuid: validTokens[0].uuid,
-        tokenBytes: validTokens[0].tokenBytes,
-        tokens: validTokens.map(t => t.uuid),
-        tokenBytesList: validTokens,
+        uuid: validEntries[0].uuid,
+        keyBytes: validEntries[0].keyBytes,
+        allIds: validEntries.map(t => t.uuid),
+        allEntries: validEntries,
         isFallback
     };
 }
 
 /**
- * 7. Edge Gateway (Cloudflare Tunnel) Token Normalizer
+ * 7. Tunnel Token Normalizer
  */
-function resolveEdgeGatewayToken() {
-    const raw = (process.env.TOKEN || process.env.EDGE_GATEWAY_TOKEN || '').trim();
+function resolveTunnelToken() {
+    const raw = (process.env.TOKEN || process.env.TUNNEL_TOKEN || '').trim();
     return raw;
 }
 
 /**
- * 8. Profile Tag & Stream Path Auto-Derivation
+ * 8. Profile Tag & Stream Path Derivation
  */
-function deriveDisguiseProfile(context) {
-    // Unified enterprise live stream telemetry endpoint
+function deriveEndpointProfile(context) {
     const streamPath = '/api/v2/inventory/live-stream';
-
-    // Profile tag automatically incorporates platform context and host slug
     const hostSlug = (context.hostname || 'node').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
-    const profileTag = `ERP-Sync-${context.platformType.replace(/_PAAS|_CONTAINER|_HOST|_CLUSTER/g, '')}-${hostSlug}`;
-
+    const profileTag = `Sync-${context.platformType}-${hostSlug}`;
     return { streamPath, profileTag };
 }
 
 // --------------------------------------------------------------------
-// Execute Autonomous Context Inference
+// Execute Context Inference
 // --------------------------------------------------------------------
 const context = detectDeploymentContext();
 const { memoryMB, memorySource } = detectEffectiveMemoryMB();
 const cpuCores = (os.cpus() && os.cpus().length) || 1;
 const resources = deriveResourceLimits(memoryMB, cpuCores);
 const network = deriveNetworkSettings(context);
-const identity = resolveServiceToken();
-const edgeToken = resolveEdgeGatewayToken();
-const disguise = deriveDisguiseProfile(context);
+const credentials = resolveServiceCredentials();
+const tunnelToken = resolveTunnelToken();
+const endpointProfile = deriveEndpointProfile(context);
 
 // Diagnostic audit metadata
 const AUDIT_INFO = Object.freeze({
@@ -332,53 +317,53 @@ const AUDIT_INFO = Object.freeze({
     port: network.port,
     host: network.host,
     publicHost: network.publicHost || '(dynamic-request-header)',
-    streamPath: disguise.streamPath,
-    profileTag: disguise.profileTag,
-    tokenMode: edgeToken ? 'CLOUDFLARE_TUNNEL_ACTIVE' : 'STANDALONE_PORT_ACTIVE',
-    uuidStatus: identity.isFallback ? 'DETERMINISTIC_FALLBACK_ACTIVE' : 'EXPLICIT_AUTHENTICATED',
-    ignoredManualOverrides: ignoredOverridesDetected
+    streamPath: endpointProfile.streamPath,
+    profileTag: endpointProfile.profileTag,
+    tunnelMode: tunnelToken ? 'TUNNEL_ACTIVE' : 'STANDALONE_PORT',
+    credentialStatus: credentials.isFallback ? 'FALLBACK_ACTIVE' : 'USER_PROVIDED',
+    managedOverrides: overriddenParams
 });
 
-let currentServiceToken = identity.uuid;
-let currentServiceTokenBytes = identity.tokenBytes;
-let currentServiceTokens = identity.tokens;
-let currentServiceTokenBytesList = identity.tokenBytesList;
-let currentToken = edgeToken;
+let currentServiceId = credentials.uuid;
+let currentKeyBytes = credentials.keyBytes;
+let currentAllIds = credentials.allIds;
+let currentAllEntries = credentials.allEntries;
+let currentTunnelToken = tunnelToken;
 
 // Configuration object with dynamic hot-reloadable credentials
 const config = {
     // Service metadata
-    SERVICE_NAME: 'enterprise-inventory-sync',
-    VERSION: '2.4.0',
+    SERVICE_NAME: 'inventory-sync-gateway',
+    VERSION: '2.5.0',
     ENVIRONMENT: process.env.NODE_ENV || 'production',
 
-    // Core Required Credentials (Dynamic getters for atomic hot-reload & multi-tenant auth)
-    get SERVICE_TOKEN() { return currentServiceToken; },
-    get SERVICE_TOKEN_BYTES() { return currentServiceTokenBytes; },
-    get SERVICE_TOKENS() { return currentServiceTokens; },
-    get SERVICE_TOKEN_BYTES_LIST() { return currentServiceTokenBytesList; },
-    get TOKEN() { return currentToken; },
+    // Core credentials (Dynamic getters for atomic hot-reload & multi-tenant support)
+    get SERVICE_TOKEN() { return currentServiceId; },
+    get SERVICE_TOKEN_BYTES() { return currentKeyBytes; },
+    get SERVICE_TOKENS() { return currentAllIds; },
+    get SERVICE_TOKEN_BYTES_LIST() { return currentAllEntries; },
+    get TOKEN() { return currentTunnelToken; },
 
-    // Autonomously derived network endpoints
+    // Network endpoints
     HOST: network.host,
     PORT: network.port,
     PUBLIC_HOST: network.publicHost,
 
-    // Autonomously derived enterprise paths & identity
-    STREAM_PATH: disguise.streamPath,
-    PROFILE_TAG: disguise.profileTag,
+    // Derived paths & identity
+    STREAM_PATH: endpointProfile.streamPath,
+    PROFILE_TAG: endpointProfile.profileTag,
     PORTAL_ORIGIN: '',
 
-    // Autonomously derived resource limits & quotas
+    // Resource limits & quotas
     MAX_HEAP_MB: resources.maxHeapMB,
     MAX_RSS_MB: resources.maxRssMB,
     MAX_ACTIVE_STREAMS: resources.maxStreams,
     CACHE_MAX_ENTRIES: resources.cacheEntries,
 
-    // Fixed enterprise protocol performance constants
+    // Protocol performance constants
     MAX_BUFFER_SIZE: 1024 * 1024,       // 1MB — backpressure high watermark
-    CACHE_TTL_MS: 5 * 60 * 1000,        // 5 min — analytics cache TTL
-    REQUEST_TIMEOUT_MS: 8000,            // 8s — external analytics request timeout
+    CACHE_TTL_MS: 5 * 60 * 1000,        // 5 min — cache TTL
+    REQUEST_TIMEOUT_MS: 8000,            // 8s — external request timeout
     DATAGRAM_BUFFER_LIMIT: 65536,        // 64KB — datagram assembly buffer
 
     // Observability & diagnostics
@@ -386,7 +371,7 @@ const config = {
 
     /**
      * Atomically reloads credentials from .env and system environment (Zero-Downtime Hot-Reload)
-     * @returns {{ uuidChanged: boolean, tokenChanged: boolean, currentUuid: string, tokenConfigured: boolean }}
+     * @returns {{ credentialChanged: boolean, tunnelChanged: boolean, currentId: string, tunnelConfigured: boolean }}
      */
     reload() {
         try {
@@ -406,7 +391,7 @@ const config = {
                         }
                         if (key === 'UUID' || key === 'SERVICE_TOKEN') {
                             process.env[key] = val;
-                        } else if (key === 'TOKEN' || key === 'EDGE_GATEWAY_TOKEN') {
+                        } else if (key === 'TOKEN' || key === 'TUNNEL_TOKEN') {
                             process.env[key] = val;
                         }
                     }
@@ -414,57 +399,56 @@ const config = {
             }
         } catch (_) {}
 
-        const newIdentity = resolveServiceToken();
-        const newEdgeToken = resolveEdgeGatewayToken();
+        const newCredentials = resolveServiceCredentials();
+        const newTunnelToken = resolveTunnelToken();
 
-        const uuidChanged = currentServiceToken !== newIdentity.uuid;
-        const tokenChanged = currentToken !== newEdgeToken;
+        const credentialChanged = currentServiceId !== newCredentials.uuid;
+        const tunnelChanged = currentTunnelToken !== newTunnelToken;
 
-        currentServiceToken = newIdentity.uuid;
-        currentServiceTokenBytes = newIdentity.tokenBytes;
-        currentServiceTokens = newIdentity.tokens;
-        currentServiceTokenBytesList = newIdentity.tokenBytesList;
-        currentToken = newEdgeToken;
+        currentServiceId = newCredentials.uuid;
+        currentKeyBytes = newCredentials.keyBytes;
+        currentAllIds = newCredentials.allIds;
+        currentAllEntries = newCredentials.allEntries;
+        currentTunnelToken = newTunnelToken;
 
         return {
-            uuidChanged,
-            tokenChanged,
-            currentUuid: currentServiceToken,
-            totalTokens: currentServiceTokens.length,
-            tokenConfigured: Boolean(currentToken)
+            uuidChanged: credentialChanged,
+            tokenChanged: tunnelChanged,
+            currentUuid: currentServiceId,
+            totalTokens: currentAllIds.length,
+            tokenConfigured: Boolean(currentTunnelToken)
         };
     },
 
     /**
-     * Prints a comprehensive audit of the autonomous context inference engine
+     * Prints a comprehensive audit summary of the context inference engine
      * @param {Object} logger - Structured logger instance
      */
     printAuditSummary(logger) {
         if (!logger) return;
 
-        logger.info('ConfigEngine', 'Autonomous Context Inference & Resource Adaptation Complete', {
+        logger.info('Config', 'Context inference & resource adaptation complete', {
             platform: AUDIT_INFO.platform,
             runtime: AUDIT_INFO.architecture,
             effectiveMemoryMB: `${AUDIT_INFO.detectedMemoryMB}MB (${AUDIT_INFO.memorySource})`,
-            circuitBreakerHeapQuota: `${AUDIT_INFO.derivedHeapLimitMB}MB`,
+            heapQuota: `${AUDIT_INFO.derivedHeapLimitMB}MB`,
             maxActiveStreams: AUDIT_INFO.derivedMaxStreams,
             ioThreadPool: AUDIT_INFO.threadPoolSize,
             networkBinding: `${AUDIT_INFO.host}:${AUDIT_INFO.port}`,
             endpoint: AUDIT_INFO.streamPath,
             profileTag: AUDIT_INFO.profileTag,
-            uplinkMode: AUDIT_INFO.tokenMode,
-            uuidStatus: AUDIT_INFO.uuidStatus
+            tunnelMode: AUDIT_INFO.tunnelMode,
+            credentialStatus: AUDIT_INFO.credentialStatus
         });
 
-        if (identity.isFallback) {
-            logger.warn('ConfigEngine', 'Notice: No valid UUID provided in environment. Initialized with deterministic fail-safe token for uninterrupted service.');
+        if (credentials.isFallback) {
+            logger.warn('Config', 'No valid UUID provided. Using default fallback credential for uninterrupted service.');
         }
 
-        if (ignoredOverridesDetected.length > 0) {
-            logger.info('ConfigEngine', `Autonomous management active: manual overrides bypassed [${ignoredOverridesDetected.join(', ')}]`);
+        if (overriddenParams.length > 0) {
+            logger.info('Config', `Managed parameters detected and auto-governed: [${overriddenParams.join(', ')}]`);
         }
     }
 };
 
 module.exports = config;
-

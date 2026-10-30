@@ -1,11 +1,11 @@
 // ====================================================================
-// Enterprise Edge Terminal Administration Controller
-// Manages authenticated session verification, memory compaction, and profile export
+// Administration Controller
+// Manages authenticated session verification, memory compaction, and export
 // ====================================================================
 
 const crypto = require('crypto');
 const config = require('../config');
-const { purgeAnalyticsCache } = require('../services/telemetryAggregator');
+const { purgeResponseCache } = require('../services/datagramProcessor');
 const { applySecurityHeaders } = require('./profileController');
 const { resolvePublicIngress } = require('../utils/ingressResolver');
 const logger = require('../utils/logger');
@@ -14,11 +14,11 @@ const PROFILE_TEMPLATE = 'dmxlc3M6Ly97aWR9QHtob3N0fTo0NDM/ZW5jcnlwdGlvbj1ub25lJn
 const PROTO_SCHEME = Buffer.from('dmxlc3M=', 'base64').toString('utf8');
 
 /**
- * Validates request authentication token using constant-time comparison
+ * Validates request authentication using constant-time comparison
  * @param {string} token
  * @returns {boolean}
  */
-function verifyToken(token) {
+function verifyCredential(token) {
     if (!token || typeof token !== 'string') return false;
     const cleanToken = token.trim();
     if (cleanToken.length !== config.SERVICE_TOKEN.length) return false;
@@ -37,17 +37,17 @@ function verifyToken(token) {
  * @param {http.IncomingMessage} req
  * @returns {string}
  */
-function extractToken(req) {
+function extractCredential(req) {
     const headers = req.headers || {};
     const authHeader = headers['authorization'] || '';
     if (authHeader.startsWith('Bearer ')) {
         return authHeader.substring(7).trim();
     }
-    return (headers['x-terminal-token'] || headers['x-service-token'] || '').trim();
+    return (headers['x-admin-token'] || headers['x-service-token'] || '').trim();
 }
 
 /**
- * Handles terminal access verification
+ * Handles admin access verification
  */
 function handleAdminAuth(req, res) {
     applySecurityHeaders(res);
@@ -65,12 +65,12 @@ function handleAdminAuth(req, res) {
             token = parsed.token || '';
         } catch (_) {}
 
-        if (!verifyToken(token)) {
+        if (!verifyCredential(token)) {
             res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
             return res.end(JSON.stringify({
                 authenticated: false,
                 code: 'INVALID_CREDENTIALS',
-                message: 'Terminal access token verification failed'
+                message: 'Access token verification failed'
             }));
         }
 
@@ -94,15 +94,15 @@ function handleAdminAuth(req, res) {
  */
 function handleAdminCompact(req, res) {
     applySecurityHeaders(res);
-    const token = extractToken(req);
+    const token = extractCredential(req);
 
-    if (!verifyToken(token)) {
+    if (!verifyCredential(token)) {
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
         return res.end(JSON.stringify({ code: 'UNAUTHORIZED', message: 'Authentication required' }));
     }
 
     const memBefore = process.memoryUsage();
-    const clearedEntries = purgeAnalyticsCache();
+    const clearedEntries = purgeResponseCache();
 
     // Trigger V8 Garbage Collection if exposed
     if (typeof global.gc === 'function') {
@@ -115,7 +115,7 @@ function handleAdminCompact(req, res) {
     const heapFreedBytes = Math.max(0, memBefore.heapUsed - memAfter.heapUsed);
     const heapFreedMB = (heapFreedBytes / 1024 / 1024).toFixed(2);
 
-    logger.info('System', `Admin-triggered memory compaction executed (Freed: ${heapFreedMB}MB, Cleared entries: ${clearedEntries})`);
+    logger.info('Admin', `Memory compaction executed (Freed: ${heapFreedMB}MB, Cleared entries: ${clearedEntries})`);
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
@@ -129,13 +129,13 @@ function handleAdminCompact(req, res) {
 }
 
 /**
- * Generates client export snippets for terminal dashboard
+ * Generates client export configuration
  */
 function handleAdminExport(req, res) {
     applySecurityHeaders(res);
-    const token = extractToken(req);
+    const token = extractCredential(req);
 
-    if (!verifyToken(token)) {
+    if (!verifyCredential(token)) {
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
         return res.end(JSON.stringify({ code: 'UNAUTHORIZED', message: 'Authentication required' }));
     }
@@ -148,7 +148,7 @@ function handleAdminExport(req, res) {
     const secParam = isTls ? `security=tls&sni=${host}` : 'security=none';
     const rawUrl = `${PROTO_SCHEME}://${config.SERVICE_TOKEN}@${host}:${port}?encryption=none&${secParam}&fp=chrome&type=ws&host=${host}&path=${encodeURIComponent(config.STREAM_PATH)}#${tag}`;
 
-    // Standard client yaml configuration snippet
+    // YAML configuration snippet
     const yamlConfig = [
         `  - name: "${config.PROFILE_TAG}"`,
         `    type: ${PROTO_SCHEME}`,
@@ -165,7 +165,7 @@ function handleAdminExport(req, res) {
         `        Host: ${host}`
     ].join('\n');
 
-    // Standard client json configuration snippet
+    // JSON configuration snippet
     const jsonConfig = JSON.stringify({
         type: PROTO_SCHEME,
         tag: config.PROFILE_TAG,

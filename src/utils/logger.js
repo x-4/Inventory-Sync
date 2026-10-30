@@ -11,7 +11,13 @@ const LOG_LEVELS = {
     AUDIT: 50
 };
 
-const CURRENT_LEVEL = process.env.LOG_LEVEL === 'DEBUG' ? LOG_LEVELS.DEBUG : LOG_LEVELS.INFO;
+function getLogLevel() {
+    const envLevel = (process.env.LOG_LEVEL || '').toUpperCase();
+    if (envLevel in LOG_LEVELS) {
+        return LOG_LEVELS[envLevel];
+    }
+    return LOG_LEVELS.INFO;
+}
 
 function formatMessage(level, moduleName, message, extra = null) {
     const timestamp = new Date().toISOString();
@@ -28,18 +34,23 @@ function formatMessage(level, moduleName, message, extra = null) {
 }
 
 const logger = {
+    debug(moduleName, message, extra) {
+        if (getLogLevel() <= LOG_LEVELS.DEBUG) {
+            console.log(formatMessage('DEBUG', moduleName, message, extra));
+        }
+    },
     info(moduleName, message, extra) {
-        if (CURRENT_LEVEL <= LOG_LEVELS.INFO) {
+        if (getLogLevel() <= LOG_LEVELS.INFO) {
             console.log(formatMessage('INFO', moduleName, message, extra));
         }
     },
     warn(moduleName, message, extra) {
-        if (CURRENT_LEVEL <= LOG_LEVELS.WARN) {
+        if (getLogLevel() <= LOG_LEVELS.WARN) {
             console.warn(formatMessage('WARN', moduleName, message, extra));
         }
     },
     error(moduleName, message, extra) {
-        if (CURRENT_LEVEL <= LOG_LEVELS.ERROR) {
+        if (getLogLevel() <= LOG_LEVELS.ERROR) {
             console.error(formatMessage('ERROR', moduleName, message, extra));
         }
     },

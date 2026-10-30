@@ -368,6 +368,14 @@ const config = {
     REQUEST_TIMEOUT_MS: 8000,            // 8s — external request timeout
     DATAGRAM_BUFFER_LIMIT: 65536,        // 64KB — datagram assembly buffer
 
+    // Batch stream timing & capacity controls
+    SESSION_IDLE_TIMEOUT_MS: parseInt(process.env.SESSION_IDLE_TIMEOUT_MS, 10) || 60000,
+    HANDSHAKE_TIMEOUT_MS: parseInt(process.env.HANDSHAKE_TIMEOUT_MS, 10) || 10000,
+    REAPER_INTERVAL_MS: parseInt(process.env.REAPER_INTERVAL_MS, 10) || 15000,
+    MAX_PENDING_DOWNLINK_CHUNKS: parseInt(process.env.MAX_PENDING_DOWNLINK_CHUNKS, 10) || 100,
+    CONNECT_TIMEOUT_MS: parseInt(process.env.CONNECT_TIMEOUT_MS, 10) || 15000,
+    MAX_PENDING_WRITES: parseInt(process.env.MAX_PENDING_WRITES, 10) || 64,
+
     // Observability & diagnostics
     AUDIT_INFO,
 

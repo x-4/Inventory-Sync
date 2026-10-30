@@ -253,4 +253,36 @@ test('BatchStream: GET without session returns 400 with enterprise error format'
     assert.equal(parsed.error, 'BAD_REQUEST');
 });
 
+test('BatchStream: HttpStreamChannel binds active uplink request for genuine pause/resume', () => {
+    const channel = new HttpStreamChannel('req-pause-test');
+    let paused = false;
+    let resumed = false;
+
+    const mockReq = new EventEmitter();
+    mockReq.pause = () => { paused = true; };
+    mockReq.resume = () => { resumed = true; };
+
+    channel.bindUplinkRequest(mockReq);
+    assert.equal(channel.activeUplinkReq, mockReq);
+
+    channel._socket.pause();
+    assert.equal(paused, true);
+
+    channel._socket.resume();
+    assert.equal(resumed, true);
+
+    // After req close, should unbind cleanly
+    mockReq.emit('close');
+    assert.equal(channel.activeUplinkReq, null);
+});
+
+test('BatchStream: HttpStreamChannel safely absorbs channel error without crash', () => {
+    const channel = new HttpStreamChannel('safe-error-session');
+    // Emitting error should not throw or exit process because default handler is bound
+    assert.doesNotThrow(() => {
+        channel.emit('error', new Error('Synthetic network glitch'));
+    });
+});
+
+
 

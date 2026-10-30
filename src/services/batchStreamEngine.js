@@ -15,9 +15,10 @@ const { createStreamBridge } = require('./streamBridge');
 const { createDatagramSession } = require('./datagramProcessor');
 const { resolvePublicIngress } = require('../utils/ingressResolver');
 
-const SESSION_IDLE_TIMEOUT_MS = 60000;      // 60 seconds idle session cleanup
-const HANDSHAKE_TIMEOUT_MS = 10000;         // 10 seconds handshake timeout
-const REAPER_INTERVAL_MS = 15000;           // 15 seconds reaper timer
+const SESSION_IDLE_TIMEOUT_MS = config.SESSION_IDLE_TIMEOUT_MS || 60000;
+const HANDSHAKE_TIMEOUT_MS = config.HANDSHAKE_TIMEOUT_MS || 10000;
+const REAPER_INTERVAL_MS = config.REAPER_INTERVAL_MS || 15000;
+const MAX_PENDING_DOWNLINK_CHUNKS = config.MAX_PENDING_DOWNLINK_CHUNKS || 100;
 
 const decoder = new BatchDecoder();
 
@@ -31,12 +32,21 @@ class HttpStreamChannel extends EventEmitter {
         super();
         this.sessionId = sessionId;
         this.downlinkRes = null;
+        this.activeUplinkReq = null;
 
         // Mock socket for downstream backpressure / bridge compatibility
         this._socket = new EventEmitter();
         this._socket.destroyed = false;
-        this._socket.pause = () => {};
-        this._socket.resume = () => {};
+        this._socket.pause = () => {
+            if (this.activeUplinkReq && !this.activeUplinkReq.destroyed) {
+                try { this.activeUplinkReq.pause(); } catch (_) {}
+            }
+        };
+        this._socket.resume = () => {
+            if (this.activeUplinkReq && !this.activeUplinkReq.destroyed) {
+                try { this.activeUplinkReq.resume(); } catch (_) {}
+            }
+        };
         this._socket.destroy = () => {
             this._socket.destroyed = true;
             this._socket.emit('close');
@@ -56,6 +66,24 @@ class HttpStreamChannel extends EventEmitter {
             this.emit('drain');
             this._socket.emit('drain');
         };
+
+        // Default error boundary to prevent unhandled 'error' event crash
+        this.on('error', (err) => {
+            logger.debug('StreamChannel', `Channel event on session ${this.sessionId}: ${err.message}`);
+        });
+    }
+
+    /**
+     * Binds active uplink request to channel for bidirectional flow control
+     * @param {http.IncomingMessage} req
+     */
+    bindUplinkRequest(req) {
+        this.activeUplinkReq = req;
+        req.on('close', () => {
+            if (this.activeUplinkReq === req) {
+                this.activeUplinkReq = null;
+            }
+        });
     }
 
     /**
@@ -107,8 +135,8 @@ class HttpStreamChannel extends EventEmitter {
         }
 
         if (!this.downlinkRes || this.downlinkRes.writableEnded) {
-            // Buffer up to 100 chunks if downlink is temporarily disconnected or awaiting attachment
-            if (this.pendingDownlinkChunks.length < 100) {
+            // Buffer up to configured chunk quota if downlink is temporarily disconnected
+            if (this.pendingDownlinkChunks.length < MAX_PENDING_DOWNLINK_CHUNKS) {
                 this.pendingDownlinkChunks.push(chunk);
             }
             if (callback) callback();
@@ -183,6 +211,10 @@ class BatchStreamSession {
         this.authenticatedTenant = null;
         this.cleaned = false;
 
+        // Packet-up sequence ordering queue
+        this.nextExpectedSeq = 0;
+        this.packetQueue = new Map();
+
         // Handshake expiration timer
         this.authTimer = setTimeout(() => {
             if (!this.isHandshakeDone) {
@@ -196,6 +228,11 @@ class BatchStreamSession {
             }
         }, HANDSHAKE_TIMEOUT_MS);
 
+        this.channel.on('error', (err) => {
+            logger.debug('BatchStream', `Channel error on session ${this.streamId}: ${err.message}`);
+            this.cleanup();
+        });
+
         this.channel.on('close', () => this.cleanup());
     }
 
@@ -207,6 +244,7 @@ class BatchStreamSession {
         if (this.cleaned) return;
         this.cleaned = true;
         clearTimeout(this.authTimer);
+        this.packetQueue.clear();
 
         if (this.authenticatedTenant) {
             metrics.decrementTenantStream(this.authenticatedTenant);
@@ -244,32 +282,42 @@ if (reaperInterval.unref) {
 }
 
 /**
- * Extracts session ID from various standard XHTTP placements:
+ * Extracts session ID and sequence metadata from standard XHTTP placements:
  * 1. Request headers (X-Session-ID, XHTTP-Session-ID, X-Accel-Session-ID, Session-ID)
- * 2. URL query parameters (session, sessionId, id)
+ * 2. URL query parameters (session, sessionId, id, seq, sequence)
  * 3. URL path suffix (/stream-path/:sessionId or /stream-path/:sessionId/:seq)
  *
  * @param {http.IncomingMessage} req
  * @param {URL} url
  * @param {string} basePath
- * @returns {string|null}
+ * @returns {{ sessionId: string|null, sequence: number|null }}
  */
-function extractSessionId(req, url, basePath) {
+function extractSessionMetadata(req, url, basePath) {
+    let sessionId = null;
+    let sequence = null;
+
     // 1. Headers check
     const headerId = req.headers['x-session-id'] ||
                      req.headers['xhttp-session-id'] ||
                      req.headers['x-accel-session-id'] ||
                      req.headers['session-id'];
     if (headerId && typeof headerId === 'string' && headerId.trim().length > 0) {
-        return headerId.trim();
+        sessionId = headerId.trim();
     }
 
     // 2. Query parameter check
-    const queryId = url.searchParams.get('session') ||
-                    url.searchParams.get('sessionId') ||
-                    url.searchParams.get('id');
-    if (queryId && queryId.trim().length > 0) {
-        return queryId.trim();
+    if (!sessionId) {
+        const queryId = url.searchParams.get('session') ||
+                        url.searchParams.get('sessionId') ||
+                        url.searchParams.get('id');
+        if (queryId && queryId.trim().length > 0) {
+            sessionId = queryId.trim();
+        }
+    }
+
+    const querySeq = url.searchParams.get('seq') || url.searchParams.get('sequence');
+    if (querySeq !== null && !isNaN(parseInt(querySeq, 10))) {
+        sequence = parseInt(querySeq, 10);
     }
 
     // 3. Path suffix check
@@ -277,13 +325,27 @@ function extractSessionId(req, url, basePath) {
         const remaining = url.pathname.slice(basePath.length).replace(/^\/+/, '');
         if (remaining.length > 0) {
             const parts = remaining.split('/');
-            if (parts[0] && parts[0].length > 0) {
-                return parts[0];
+            if (parts[0] && parts[0].length > 0 && !sessionId) {
+                sessionId = parts[0];
+            }
+            if (parts[1] && !isNaN(parseInt(parts[1], 10))) {
+                sequence = parseInt(parts[1], 10);
             }
         }
     }
 
-    return null;
+    return { sessionId, sequence };
+}
+
+/**
+ * Extracts session ID for legacy callers
+ * @param {http.IncomingMessage} req
+ * @param {URL} url
+ * @param {string} basePath
+ * @returns {string|null}
+ */
+function extractSessionId(req, url, basePath) {
+    return extractSessionMetadata(req, url, basePath).sessionId;
 }
 
 /**
@@ -365,10 +427,48 @@ function processUplinkChunk(session, chunk, req) {
         const canAccept = session.bridge.write(chunk);
         if (!canAccept && req && !req.destroyed) {
             try { req.pause(); } catch (_) {}
-            session.channel.once('drain', () => {
+            session.bridge.onDrain?.(() => {
                 try { req.resume(); } catch (_) {}
             });
         }
+    }
+}
+
+/**
+ * Handles sliding window packet-up reordering before pushing to uplink processor
+ * @param {BatchStreamSession} session
+ * @param {Buffer} chunk
+ * @param {number|null} sequence
+ * @param {http.IncomingMessage} req
+ */
+function feedOrderedUplinkChunk(session, chunk, sequence, req) {
+    if (sequence === null || sequence === undefined) {
+        return processUplinkChunk(session, chunk, req);
+    }
+
+    if (sequence === session.nextExpectedSeq) {
+        processUplinkChunk(session, chunk, req);
+        session.nextExpectedSeq++;
+
+        // Drain any consecutive packets that arrived earlier
+        while (session.packetQueue.has(session.nextExpectedSeq)) {
+            const nextChunk = session.packetQueue.get(session.nextExpectedSeq);
+            session.packetQueue.delete(session.nextExpectedSeq);
+            processUplinkChunk(session, nextChunk, req);
+            session.nextExpectedSeq++;
+        }
+    } else if (sequence > session.nextExpectedSeq) {
+        // Queue out-of-order packet (cap at 16 packets to prevent memory bloating)
+        if (session.packetQueue.size < 16) {
+            session.packetQueue.set(sequence, chunk);
+        } else {
+            // Evict and process to prevent deadlock
+            processUplinkChunk(session, chunk, req);
+            session.nextExpectedSeq = sequence + 1;
+        }
+    } else {
+        // Stale or duplicate packet, forward directly
+        processUplinkChunk(session, chunk, req);
     }
 }
 
@@ -419,8 +519,9 @@ function handleBatchStreamRequest(req, res, url, basePath = config.STREAM_PATH) 
         return true;
     }
 
-    // Resolve or generate Session ID
-    let sessionId = extractSessionId(req, url, basePath);
+    // Resolve or generate Session ID & sequence metadata
+    const { sessionId: rawSessionId, sequence } = extractSessionMetadata(req, url, basePath);
+    let sessionId = rawSessionId;
 
     // Circuit Breaker: Quota check for new sessions
     const isExisting = Boolean(sessionId && activeSessions.has(sessionId));
@@ -541,9 +642,10 @@ function handleBatchStreamRequest(req, res, url, basePath = config.STREAM_PATH) 
         }
 
         session.touch();
+        session.channel.bindUplinkRequest(req);
 
         req.on('data', (chunk) => {
-            processUplinkChunk(session, chunk, req);
+            feedOrderedUplinkChunk(session, chunk, sequence, req);
         });
 
         req.on('end', () => {

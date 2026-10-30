@@ -37,6 +37,9 @@ if (process.env.CLUSTER_MODE === 'true' && cluster.isPrimary) {
     const cpuCount = os.cpus().length;
     const workerCount = parseInt(process.env.CLUSTER_WORKERS, 10) || Math.min(cpuCount, 8);
     logger.info('Cluster', `Master supervisor (PID: ${process.pid}) spawning ${workerCount} workers...`);
+    if (workerCount > 1) {
+        logger.warn('Cluster', 'Multi-worker cluster active: Split-mode XHTTP (stream-up/packet-up) requires client IP affinity or single-stream (stream-one) mode.');
+    }
 
     tunnelManager.initialize().catch((err) => {
         logger.error('Tunnel', `Supervisor tunnel startup error: ${err.message}`);

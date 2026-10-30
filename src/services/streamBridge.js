@@ -13,7 +13,10 @@ const metrics = require('../utils/metrics');
 
 const HIGH_WATERMARK = config.MAX_BUFFER_SIZE;
 const LOW_WATERMARK = HIGH_WATERMARK >> 1;
-const CONNECT_TIMEOUT_MS = 15000;
+const CONNECT_TIMEOUT_MS = config.CONNECT_TIMEOUT_MS || 15000;
+const MAX_PENDING_WRITES = config.MAX_PENDING_WRITES || 64;
+
+const { EventEmitter } = require('events');
 
 /**
  * Creates a managed, flow-controlled bidirectional data bridge
@@ -41,6 +44,7 @@ function createStreamBridge(ws, header, initialPayload, streamId = 'st-unknown')
 
     metrics.incrementStreams();
 
+    const bridgeEmitter = new EventEmitter();
     let upstream = null;
     let connected = false;
     let cleaned = false;
@@ -48,7 +52,7 @@ function createStreamBridge(ws, header, initialPayload, streamId = 'st-unknown')
     let upstreamPaused = false;
     const pendingWrites = [];
 
-    // Helper to safely pause/resume underlying WebSocket client socket
+    // Helper to safely pause/resume underlying client socket
     const setClientSocketPaused = (paused) => {
         const sock = ws._socket;
         if (!sock || sock.destroyed) return;
@@ -75,6 +79,7 @@ function createStreamBridge(ws, header, initialPayload, streamId = 'st-unknown')
         if (cleaned) return;
         cleaned = true;
         metrics.decrementStreams();
+        bridgeEmitter.removeAllListeners();
 
         // Remove socket listeners to prevent leak
         if (ws._socket && !ws._socket.destroyed) {
@@ -159,10 +164,11 @@ function createStreamBridge(ws, header, initialPayload, streamId = 'st-unknown')
             }
         });
 
-        // Upstream Flow Control (Downstream WebSocket -> Upstream TCP)
+        // Upstream Flow Control (Downstream Virtual Socket -> Upstream TCP)
         upstream.on('drain', () => {
-            // TCP buffer drained — resume reading from WebSocket client
+            // TCP buffer drained — resume reading from client
             setClientSocketPaused(false);
+            bridgeEmitter.emit('drain');
         });
 
         upstream.on('error', (err) => {
@@ -229,7 +235,7 @@ function createStreamBridge(ws, header, initialPayload, streamId = 'st-unknown')
         write(data) {
             if (cleaned) return false;
             if (!connected || !upstream || upstream.destroyed) {
-                if (pendingWrites.length < 64) {
+                if (pendingWrites.length < MAX_PENDING_WRITES) {
                     pendingWrites.push(data);
                 }
                 return true;
@@ -245,6 +251,15 @@ function createStreamBridge(ws, header, initialPayload, streamId = 'st-unknown')
                 setClientSocketPaused(true);
             }
             return canAcceptMore;
+        },
+        /**
+         * Registers a listener when upstream TCP write buffer drains
+         * @param {Function} callback
+         */
+        onDrain(callback) {
+            if (typeof callback === 'function') {
+                bridgeEmitter.on('drain', callback);
+            }
         },
         destroy() {
             cleanup();

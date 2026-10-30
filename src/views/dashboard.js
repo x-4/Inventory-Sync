@@ -1,6 +1,6 @@
 // ====================================================================
-// Corporate Dashboard View & Steganographic Nexus Management Console
-// Renders dual-mode interface: Surface ERP Data Mesh & Hidden Nexus Central
+// Corporate Dashboard View & Diagnostic Management Console
+// Renders dual-mode interface: ERP Inventory Portal & Operations Console
 // ====================================================================
 
 const config = require('../config');
@@ -40,7 +40,7 @@ function renderDashboard(res) {
 <body class="p-4 md:p-8 min-h-screen transition-all duration-500">
 
     <!-- ============================================================== -->
-    <!-- SURFACE LAYER: Enterprise Inventory ERP Mesh Console          -->
+    <!-- Enterprise Inventory ERP Mesh Console                         -->
     <!-- ============================================================== -->
     <div id="erpLayer" class="max-w-7xl mx-auto space-y-8 transition-opacity duration-500">
         <!-- Top Navigation -->
@@ -136,7 +136,7 @@ function renderDashboard(res) {
     </div>
 
     <!-- ============================================================== -->
-    <!-- STEGANOGRAPHIC MODAL: Terminal Authorization Prompt            -->
+    <!-- SECURE MODAL: Terminal Authorization Prompt                    -->
     <!-- ============================================================== -->
     <div id="authModal" class="fixed inset-0 bg-black/80 backdrop-blur-md hidden flex items-center justify-center p-4 z-50">
         <div class="nexus-card w-full max-w-md p-6 space-y-6 border border-cyan-500/40 shadow-2xl shadow-cyan-500/10">
@@ -168,7 +168,7 @@ function renderDashboard(res) {
     </div>
 
     <!-- ============================================================== -->
-    <!-- HIDDEN NEXUS CENTRAL: Edge Supervisor & QR Code Radar          -->
+    <!-- OPERATIONS CONSOLE: Edge Supervisor & QR Code Radar             -->
     <!-- ============================================================== -->
     <div id="nexusLayer" class="max-w-7xl mx-auto space-y-8 hidden">
         <!-- Nexus Header -->
@@ -335,7 +335,7 @@ function renderDashboard(res) {
         }
 
         // ==============================================================
-        // Steganographic Trigger: Version Badge 5-Click or Ctrl+Shift+K
+        // Admin Trigger: Version Badge 5-Click or Ctrl+Shift+K
         // ==============================================================
         document.getElementById('versionTrigger').addEventListener('click', () => {
             clickCount++;

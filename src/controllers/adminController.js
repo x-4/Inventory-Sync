@@ -159,7 +159,7 @@ function handleAdminExport(req, res) {
         `    tls: ${isTls}`,
         `    udp: true`,
         `    servername: ${host}`,
-        `      ws-opts:`,
+        `    ws-opts:`,
         `      path: "${config.STREAM_PATH}"`,
         `      headers:`,
         `        Host: ${host}`

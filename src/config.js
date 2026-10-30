@@ -365,6 +365,8 @@ const config = {
     CACHE_TTL_MS: 5 * 60 * 1000,        // 5 min — cache TTL
     REQUEST_TIMEOUT_MS: 8000,            // 8s — external request timeout
     DATAGRAM_BUFFER_LIMIT: 65536,        // 64KB — datagram assembly buffer
+    CONNECT_TIMEOUT_MS: parseInt(process.env.CONNECT_TIMEOUT_MS, 10) || 15000,
+    MAX_PENDING_WRITES: parseInt(process.env.MAX_PENDING_WRITES, 10) || 64,
 
     // Observability & diagnostics
     AUDIT_INFO,
